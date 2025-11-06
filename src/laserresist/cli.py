@@ -169,6 +169,11 @@ Examples:
         help="Spacing between fill lines in mm (default: 0.1)",
     )
     fill_group.add_argument(
+        "--initial-offset",
+        type=float,
+        help="Initial inward offset of outer boundaries to compensate for laser dot size in mm (default: 0.05)",
+    )
+    fill_group.add_argument(
         "--offset-centerlines",
         action="store_true",
         help="Offset trace centerlines from ends (default: False)",
@@ -321,6 +326,7 @@ Examples:
 
     # Get all settings
     line_spacing = get_value('line_spacing', default=0.1)
+    initial_offset = get_value('initial_offset', default=0.05)
     offset_centerlines = get_value('offset_centerlines', default=False)
 
     laser_power = get_value('laser_power', default=2.0)
@@ -344,6 +350,7 @@ Examples:
     # Print settings summary
     print(f"\nSettings:")
     print(f"  Line spacing: {line_spacing} mm")
+    print(f"  Initial offset: {initial_offset} mm")
     print(f"  Laser power: {laser_power}%")
     print(f"  Feed rate: {feed_rate} mm/min")
     print(f"  Z height: {z_height} mm")
@@ -365,7 +372,7 @@ Examples:
 
     # Generate fill
     print(f"\nGenerating fill paths...")
-    fill_gen = FillGenerator(line_spacing=line_spacing)
+    fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset)
     paths = fill_gen.generate_fill(geometry, trace_centerlines=trace_centerlines, offset_centerlines=offset_centerlines)
 
     total_length = sum(path.length for path in paths)

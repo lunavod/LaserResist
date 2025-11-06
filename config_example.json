@@ -1,5 +1,6 @@
 {
   "line_spacing": 0.1,
+  "initial_offset": 0.05,
   "offset_centerlines": false,
   "laser_power": 6.0,
   "feed_rate": 1400.0,

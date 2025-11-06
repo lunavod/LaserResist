@@ -9,13 +9,16 @@ from shapely.ops import voronoi_diagram, linemerge, substring
 class FillGenerator:
     """Generate fill patterns for polygon areas."""
 
-    def __init__(self, line_spacing: float = 0.1):
+    def __init__(self, line_spacing: float = 0.1, initial_offset: float = 0.05):
         """Initialize the fill generator.
 
         Args:
             line_spacing: Spacing between fill lines in mm
+            initial_offset: Initial inward offset of outer boundaries to compensate for laser dot size in mm (default: 0.05)
+                          This shrinks the outermost contour while keeping internal fill structure unchanged.
         """
         self.line_spacing = line_spacing
+        self.initial_offset = initial_offset
 
     def generate_fill(self, geometry: Union[Polygon, MultiPolygon], trace_centerlines: List[LineString] = None, offset_centerlines: bool = False) -> List[LineString]:
         """Generate fill lines for the given geometry using contour offset method.
@@ -38,12 +41,13 @@ class FillGenerator:
         if isinstance(geometry, Polygon):
             geometry = MultiPolygon([geometry])
 
+        # Detect thin annular pads from the ORIGINAL geometry before any buffering
+        original_geometry = geometry
+        thin_annular_rings = self._detect_thin_annular_pads_at_start(original_geometry)
+
         # Start with the original geometry
         current_geom = geometry
         remaining_unfilled = None  # Track what's left after contours
-
-        # Detect thin annular pads from the ORIGINAL geometry before any buffering
-        thin_annular_rings = self._detect_thin_annular_pads_at_start(geometry)
         if thin_annular_rings:
             print(f"  Adding {len(thin_annular_rings)} circles for thin annular pads")
             paths.extend(thin_annular_rings)
@@ -52,8 +56,20 @@ class FillGenerator:
         # Keep offsetting inward until nothing remains
         iteration = 0
         while not current_geom.is_empty:
-            # Extract all boundaries from current geometry
-            boundary_paths = self._extract_boundaries(current_geom)
+            # For the first iteration, apply initial_offset inward to the boundaries
+            # This compensates for laser dot size on the outer edges
+            if iteration == 0 and self.initial_offset > 0:
+                # Buffer inward to account for laser dot size
+                offset_geom = current_geom.buffer(-self.initial_offset)
+                if not offset_geom.is_empty:
+                    # Extract boundaries from the offset geometry
+                    boundary_paths = self._extract_boundaries(offset_geom)
+                else:
+                    # If offset makes it disappear, use original
+                    boundary_paths = self._extract_boundaries(current_geom)
+            else:
+                # Extract all boundaries from current geometry
+                boundary_paths = self._extract_boundaries(current_geom)
 
             # Filter out degenerate geometries (points, very small fragments)
             boundary_paths = [p for p in boundary_paths if p.length > 0.01]  # Min 0.01mm
