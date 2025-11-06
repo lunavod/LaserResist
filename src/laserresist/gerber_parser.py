@@ -179,6 +179,31 @@ class GerberParser:
         (min_x, min_y), (max_x, max_y) = bbox
         return (min_x, min_y, max_x, max_y)
 
+    @staticmethod
+    def parse_board_outline(outline_path: Path) -> tuple:
+        """Parse a board outline Gerber file and return its bounding box.
+
+        Args:
+            outline_path: Path to the board outline Gerber file (.gko, .gm1, etc.)
+
+        Returns:
+            Tuple of (min_x, min_y, max_x, max_y) in mm
+        """
+        try:
+            outline_layer = GerberFile.open(str(outline_path))
+            bbox = outline_layer.bounding_box()
+
+            if bbox is None:
+                return (0, 0, 0, 0)
+
+            # gerbonara returns ((min_x, min_y), (max_x, max_y))
+            (min_x, min_y), (max_x, max_y) = bbox
+            return (min_x, min_y, max_x, max_y)
+
+        except Exception as e:
+            print(f"Warning: Could not parse board outline: {e}")
+            return (0, 0, 0, 0)
+
     def get_trace_centerlines(self) -> List[LineString]:
         """Get the centerlines of all trace lines.
 
