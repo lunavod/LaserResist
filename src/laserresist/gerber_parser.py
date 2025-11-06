@@ -24,6 +24,7 @@ class GerberParser:
         self.drill_via_path = drill_via_path
         self.layer: GerberFile = None
         self.polygons: List[Polygon] = []
+        self.trace_centerlines: List[LineString] = []  # Store trace centerlines
 
     def parse(self) -> Union[MultiPolygon, Polygon]:
         """Parse the Gerber file and return copper geometry.
@@ -37,6 +38,7 @@ class GerberParser:
         # Convert to shapely geometries
         # Each graphic object needs to be converted to primitives, then to arc polygons
         geometries = []
+        self.trace_centerlines = []  # Reset centerlines
 
         # Iterate through all graphics objects in the layer
         for obj in self.layer.objects:
@@ -66,6 +68,10 @@ class GerberParser:
                         poly = line.buffer(radius, cap_style='round', join_style='round')
                         if poly.is_valid and not poly.is_empty:
                             geometries.append(poly)
+
+                        # Also store the centerline for later use in fill generation
+                        if line.length > 0.01:  # Only meaningful lines
+                            self.trace_centerlines.append(line)
                     else:
                         # For other primitives, convert to arc polygon
                         arc_poly = prim.to_arc_poly()
@@ -172,3 +178,11 @@ class GerberParser:
         # Flatten to (min_x, min_y, max_x, max_y)
         (min_x, min_y), (max_x, max_y) = bbox
         return (min_x, min_y, max_x, max_y)
+
+    def get_trace_centerlines(self) -> List[LineString]:
+        """Get the centerlines of all trace lines.
+
+        Returns:
+            List of LineString centerlines from trace objects
+        """
+        return self.trace_centerlines
