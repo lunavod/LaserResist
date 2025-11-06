@@ -247,6 +247,11 @@ Examples:
         action="store_true",
         help="Draw board outline before exposure (for positioning verification)",
     )
+    laser_group.add_argument(
+        "--outline-offset-count",
+        type=int,
+        help="Number of offset outline copies: 0=single, -1=one outward, +1=one inward, etc. (default: 0)",
+    )
 
     args = parser.parse_args()
 
@@ -334,6 +339,7 @@ Examples:
     laser_arm_command = get_value('laser_arm_command')
     laser_disarm_command = get_value('laser_disarm_command')
     draw_outline = get_value('draw_outline', default=False)
+    outline_offset_count = get_value('outline_offset_count', default=0)
 
     # Print settings summary
     print(f"\nSettings:")
@@ -382,6 +388,8 @@ Examples:
         laser_arm_command=laser_arm_command,
         laser_disarm_command=laser_disarm_command,
         draw_outline=draw_outline,
+        outline_offset_count=outline_offset_count,
+        outline_offset_spacing=line_spacing,
     )
 
     with open(output_file, 'w') as f:

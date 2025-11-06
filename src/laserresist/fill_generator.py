@@ -42,6 +42,13 @@ class FillGenerator:
         current_geom = geometry
         remaining_unfilled = None  # Track what's left after contours
 
+        # Detect thin annular pads from the ORIGINAL geometry before any buffering
+        thin_annular_rings = self._detect_thin_annular_pads_at_start(geometry)
+        if thin_annular_rings:
+            print(f"  Adding {len(thin_annular_rings)} circles for thin annular pads")
+            paths.extend(thin_annular_rings)
+            contour_paths.extend(thin_annular_rings)
+
         # Keep offsetting inward until nothing remains
         iteration = 0
         while not current_geom.is_empty:
@@ -56,8 +63,7 @@ class FillGenerator:
             # Try to buffer inward
             next_geom = self._buffer_incremental(current_geom, self.line_spacing)
 
-            # If buffering made it disappear or very small, add centerlines from current geometry
-            # Only add centerlines when next buffer would eliminate most of the geometry
+            # If buffering made it disappear or very small, add centerlines for remaining area
             current_area = self._get_total_area(current_geom)
             next_area = self._get_total_area(next_geom)
 
@@ -488,3 +494,91 @@ class FillGenerator:
         except Exception as e:
             # If offsetting fails, return None
             return None
+
+    def _detect_thin_annular_pads_at_start(self, geometry: Union[Polygon, MultiPolygon]) -> List[LineString]:
+        """Detect thin annular pads from the ORIGINAL geometry and generate circular centerlines.
+
+        Specifically targets small circular pads with holes where ring_width is between
+        line_spacing and 2*line_spacing (only fits one contour, but middle is empty).
+
+        Args:
+            geometry: Original unmodified geometry
+
+        Returns:
+            List of circular centerlines for thin rings
+        """
+        from shapely.geometry import Point
+        from math import pi, cos, sin
+
+        rings = []
+
+        # Normalize to list of polygons
+        polys = list(geometry.geoms) if hasattr(geometry, 'geoms') else [geometry]
+
+        for poly in polys:
+            if not isinstance(poly, Polygon):
+                continue
+
+            # MUST have interior ring (hole)
+            if len(poly.interiors) == 0:
+                continue
+
+            # Get bounds to check if it's small and circular
+            bounds = poly.bounds
+            width = bounds[2] - bounds[0]
+            height = bounds[3] - bounds[1]
+
+            # Skip large pads - only look at small ones
+            pad_size = max(width, height)
+            if pad_size > 4.0:  # Skip pads larger than 4mm
+                continue
+
+            # Must be circular (very strict check)
+            aspect_ratio = max(width, height) / (min(width, height) + 0.001)
+            if aspect_ratio > 1.15:  # Very strict - must be nearly circular
+                continue
+
+            # Get the exterior and first interior ring
+            exterior = poly.exterior
+            interior = poly.interiors[0]
+
+            centroid = poly.centroid
+
+            # Calculate average radius from centroid to exterior and interior
+            ext_coords = list(exterior.coords)
+            int_coords = list(interior.coords)
+
+            outer_distances = [Point(x, y).distance(centroid) for x, y in ext_coords]
+            inner_distances = [Point(x, y).distance(centroid) for x, y in int_coords]
+
+            outer_radius = sum(outer_distances) / len(outer_distances)
+            inner_radius = sum(inner_distances) / len(inner_distances)
+
+            # Calculate ring width (annular pad width)
+            ring_width = outer_radius - inner_radius
+
+            # ONLY process if ring width is between line_spacing and 2*line_spacing
+            # This is the exact problem: only 1 contour fits, middle is empty
+            if not (self.line_spacing < ring_width < 2 * self.line_spacing):
+                continue
+
+            # Generate a circular centerline at the midpoint radius
+            mid_radius = (outer_radius + inner_radius) / 2.0
+
+            # Create smooth circle
+            num_points = max(16, int(2 * pi * mid_radius / (self.line_spacing / 2)))
+            coords = []
+            for i in range(num_points + 1):  # +1 to close the circle
+                angle = 2 * pi * i / num_points
+                x = centroid.x + mid_radius * cos(angle)
+                y = centroid.y + mid_radius * sin(angle)
+                coords.append((x, y))
+
+            if len(coords) >= 2:
+                try:
+                    ring_centerline = LineString(coords)
+                    rings.append(ring_centerline)
+                except:
+                    pass
+
+        return rings

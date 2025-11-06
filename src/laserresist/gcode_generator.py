@@ -23,6 +23,8 @@ class GCodeGenerator:
         laser_arm_command: Optional[str] = None,
         laser_disarm_command: Optional[str] = None,
         draw_outline: bool = False,
+        outline_offset_count: int = 0,
+        outline_offset_spacing: float = 0.1,
     ):
         """Initialize the G-code generator.
 
@@ -41,6 +43,8 @@ class GCodeGenerator:
             laser_arm_command: Optional command to arm/enable laser (e.g., "ARM_LASER"), default None
             laser_disarm_command: Optional command to disarm/disable laser (e.g., "DISARM_LASER"), default None
             draw_outline: If True, draw board outline before exposure (for positioning), default False
+            outline_offset_count: Number of offset copies: 0=single outline, -1=one outward copy, +1=one inward copy, etc.
+            outline_offset_spacing: Spacing between offset copies in mm, default 0.1
         """
         self.laser_power = laser_power
         self.feed_rate = feed_rate
@@ -56,6 +60,8 @@ class GCodeGenerator:
         self.laser_arm_command = laser_arm_command
         self.laser_disarm_command = laser_disarm_command
         self.draw_outline = draw_outline
+        self.outline_offset_count = outline_offset_count
+        self.outline_offset_spacing = outline_offset_spacing
 
         # Calculate S parameter for M3 command (0-255 scale)
         self.laser_s_value = int((laser_power / 100.0) * laser_max_power)
@@ -108,6 +114,17 @@ class GCodeGenerator:
 
         # Store board outline bounds for bed mesh calculation
         self.board_outline_bounds = board_outline_bounds
+
+        # Validate negative outline offsets (outward expansion)
+        if self.draw_outline and self.outline_offset_count < 0:
+            required_offset = abs(self.outline_offset_count) * self.outline_offset_spacing
+            if self.x_offset < required_offset or self.y_offset < required_offset:
+                print(f"\nWARNING: Negative outline offsets draw OUTSIDE the board!")
+                print(f"  You specified {abs(self.outline_offset_count)} outward copies ({required_offset:.2f}mm)")
+                print(f"  But x_offset={self.x_offset}mm, y_offset={self.y_offset}mm")
+                print(f"  The board origin will shift by the outline offset!")
+                print(f"  Set x_offset and y_offset to at least {required_offset:.2f}mm to avoid issues.")
+                print(f"  Note: Negative offsets move the effective board position!")
 
         # TODO: Calculate time estimate
         # TODO: Add custom start G-code support
@@ -291,27 +308,56 @@ class GCodeGenerator:
         # Calculate transformed corner positions (respecting normalization and offsets)
         # If normalized, board starts at offset, otherwise at original position + offset
         if self.normalize_origin:
-            corner_x1 = self.x_offset
-            corner_y1 = self.y_offset
+            base_x1 = self.x_offset
+            base_y1 = self.y_offset
         else:
-            corner_x1 = b_min_x + self.x_offset
-            corner_y1 = b_min_y + self.y_offset
+            base_x1 = b_min_x + self.x_offset
+            base_y1 = b_min_y + self.y_offset
 
-        corner_x2 = corner_x1 + board_width
-        corner_y2 = corner_y1 + board_height
+        base_x2 = base_x1 + board_width
+        base_y2 = base_y1 + board_height
 
         f.write("\n")
-        f.write("; Draw board outline (for positioning verification)\n")
+        if self.outline_offset_count == 0:
+            f.write("; Draw board outline (for positioning verification)\n")
+        else:
+            offset_dir = "outward" if self.outline_offset_count < 0 else "inward"
+            f.write(f"; Draw board outline with {abs(self.outline_offset_count)} {offset_dir} offset copies\n")
         f.write(f"G1 F{self.feed_rate}  ; Set outline drawing speed\n")
 
-        # Draw rectangle: start at corner 1, go clockwise
-        f.write(f"G0 X{corner_x1:.4f} Y{corner_y1:.4f}  ; Move to corner 1\n")
-        f.write(f"M3 S{self.laser_s_value}  ; Laser on\n")
-        f.write(f"G1 X{corner_x2:.4f} Y{corner_y1:.4f}  ; Draw to corner 2\n")
-        f.write(f"G1 X{corner_x2:.4f} Y{corner_y2:.4f}  ; Draw to corner 3\n")
-        f.write(f"G1 X{corner_x1:.4f} Y{corner_y2:.4f}  ; Draw to corner 4\n")
-        f.write(f"G1 X{corner_x1:.4f} Y{corner_y1:.4f}  ; Draw back to corner 1\n")
-        f.write("M5  ; Laser off\n")
+        # Determine how many outlines to draw and offset direction
+        num_outlines = abs(self.outline_offset_count) + 1  # +1 for the base outline
+        offset_direction = -1 if self.outline_offset_count < 0 else 1  # -1 = outward, +1 = inward
+
+        for i in range(num_outlines):
+            # Calculate offset for this iteration
+            # i=0 is the base outline, i>0 are offset copies
+            if i == 0:
+                offset_amount = 0
+            else:
+                offset_amount = i * self.outline_offset_spacing * offset_direction
+
+            # Apply offset (negative = expand, positive = shrink)
+            corner_x1 = base_x1 - offset_amount
+            corner_y1 = base_y1 - offset_amount
+            corner_x2 = base_x2 + offset_amount
+            corner_y2 = base_y2 + offset_amount
+
+            # Draw rectangle: start at corner 1, go clockwise
+            if i == 0:
+                f.write(f"; Base outline\n")
+            else:
+                f.write(f"; Offset copy {i} ({abs(offset_amount):.2f}mm {offset_dir})\n")
+
+            f.write(f"G0 X{corner_x1:.4f} Y{corner_y1:.4f}  ; Move to corner 1\n")
+            f.write(f"M3 S{self.laser_s_value}  ; Laser on\n")
+            f.write(f"G1 X{corner_x2:.4f} Y{corner_y1:.4f}  ; Draw to corner 2\n")
+            f.write(f"G1 X{corner_x2:.4f} Y{corner_y2:.4f}  ; Draw to corner 3\n")
+            f.write(f"G1 X{corner_x1:.4f} Y{corner_y2:.4f}  ; Draw to corner 4\n")
+            f.write(f"G1 X{corner_x1:.4f} Y{corner_y1:.4f}  ; Draw back to corner 1\n")
+            f.write("M5  ; Laser off\n")
+            f.write("\n")
+
         f.write("\n")
 
     def _write_footer(self, f: TextIO):

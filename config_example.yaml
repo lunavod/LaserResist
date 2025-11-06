@@ -27,3 +27,7 @@ laser_disarm_command: "DISARM_LASER" # Command to disable laser relay
 
 # Board outline drawing (optional)
 draw_outline: false                  # Draw board outline before exposure (for positioning)
+outline_offset_count: 0              # Offset copies: 0=single, -1=one outward, +1=one inward, etc.
+                                     # NOTE: Negative (outward) requires x_offset/y_offset >= abs(count) * line_spacing
+                                     # Positive (inward) for boards with space between outline and copper
+                                     # Negative (outward) shifts effective board position - use with care!
