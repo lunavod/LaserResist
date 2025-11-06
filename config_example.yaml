@@ -1,0 +1,29 @@
+# LaserResist Configuration File
+# All settings are optional - defaults will be used if not specified
+
+# Fill generation
+line_spacing: 0.1          # Spacing between fill lines in mm
+offset_centerlines: false  # Offset trace centerlines from ends
+
+# Laser settings
+laser_power: 6.0           # Laser power percentage (0-100)
+feed_rate: 1400.0          # Feed rate for exposure in mm/min
+travel_rate: 6000.0        # Rapid travel rate in mm/min
+z_height: 20.0             # Z height for laser focus in mm
+
+# Coordinate transformation
+x_offset: 0.0              # X offset in mm
+y_offset: 0.0              # Y offset in mm
+# normalize_origin: true   # Normalize coordinates (handled by --no-normalize CLI flag)
+
+# Bed mesh calibration (optional)
+bed_mesh: true             # Enable bed mesh calibration
+mesh_offset: 3.0           # Offset from board edges in mm
+probe_count: "3,3"         # Probe points (X,Y)
+
+# Laser control commands (optional)
+laser_arm_command: "ARM_LASER"       # Command to enable laser relay
+laser_disarm_command: "DISARM_LASER" # Command to disable laser relay
+
+# Board outline drawing (optional)
+draw_outline: false                  # Draw board outline before exposure (for positioning)

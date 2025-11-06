@@ -1,0 +1,16 @@
+{
+  "line_spacing": 0.1,
+  "offset_centerlines": false,
+  "laser_power": 6.0,
+  "feed_rate": 1400.0,
+  "travel_rate": 6000.0,
+  "z_height": 20.0,
+  "x_offset": 0.0,
+  "y_offset": 0.0,
+  "bed_mesh": true,
+  "mesh_offset": 3.0,
+  "probe_count": "3,3",
+  "laser_arm_command": "ARM_LASER",
+  "laser_disarm_command": "DISARM_LASER",
+  "draw_outline": false
+}

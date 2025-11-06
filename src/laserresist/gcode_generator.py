@@ -22,6 +22,7 @@ class GCodeGenerator:
         probe_count: tuple = (3, 3),
         laser_arm_command: Optional[str] = None,
         laser_disarm_command: Optional[str] = None,
+        draw_outline: bool = False,
     ):
         """Initialize the G-code generator.
 
@@ -39,6 +40,7 @@ class GCodeGenerator:
             probe_count: Number of probe points (x, y) for mesh calibration, default (3, 3)
             laser_arm_command: Optional command to arm/enable laser (e.g., "ARM_LASER"), default None
             laser_disarm_command: Optional command to disarm/disable laser (e.g., "DISARM_LASER"), default None
+            draw_outline: If True, draw board outline before exposure (for positioning), default False
         """
         self.laser_power = laser_power
         self.feed_rate = feed_rate
@@ -53,6 +55,7 @@ class GCodeGenerator:
         self.probe_count = probe_count
         self.laser_arm_command = laser_arm_command
         self.laser_disarm_command = laser_disarm_command
+        self.draw_outline = draw_outline
 
         # Calculate S parameter for M3 command (0-255 scale)
         self.laser_s_value = int((laser_power / 100.0) * laser_max_power)
@@ -188,6 +191,10 @@ class GCodeGenerator:
             f.write("; Arm laser (enable relay)\n")
             f.write(f"{self.laser_arm_command}\n")
 
+        # Draw outline (optional)
+        if self.draw_outline and board_outline_bounds:
+            self._write_outline(f, board_outline_bounds)
+
         f.write("\n")
 
     def _write_paths(self, f: TextIO, paths: List[LineString]):
@@ -245,12 +252,19 @@ class GCodeGenerator:
         board_width = b_max_x - b_min_x
         board_height = b_max_y - b_min_y
 
-        # Calculate mesh bounds with offset from edges
-        # Since we normalize to (0, 0), the board spans from (0, 0) to (board_width, board_height)
-        mesh_min_x = 0 + self.mesh_offset
-        mesh_min_y = 0 + self.mesh_offset
-        mesh_max_x = board_width - self.mesh_offset
-        mesh_max_y = board_height - self.mesh_offset
+        # Calculate board position (respecting normalization and offsets)
+        if self.normalize_origin:
+            board_x = self.x_offset
+            board_y = self.y_offset
+        else:
+            board_x = b_min_x + self.x_offset
+            board_y = b_min_y + self.y_offset
+
+        # Calculate mesh bounds with offset from edges (relative to board position)
+        mesh_min_x = board_x + self.mesh_offset
+        mesh_min_y = board_y + self.mesh_offset
+        mesh_max_x = board_x + board_width - self.mesh_offset
+        mesh_max_y = board_y + board_height - self.mesh_offset
 
         # Validate mesh bounds
         if mesh_max_x <= mesh_min_x or mesh_max_y <= mesh_min_y:
@@ -260,6 +274,44 @@ class GCodeGenerator:
         f.write("\n")
         f.write("; Bed mesh calibration\n")
         f.write(f"BED_MESH_CALIBRATE MESH_MIN={mesh_min_x:.2f},{mesh_min_y:.2f} MESH_MAX={mesh_max_x:.2f},{mesh_max_y:.2f} PROBE_COUNT={self.probe_count[0]},{self.probe_count[1]}\n")
+        f.write("\n")
+
+    def _write_outline(self, f: TextIO, board_outline_bounds: tuple):
+        """Write board outline drawing for positioning verification.
+
+        Args:
+            f: File handle
+            board_outline_bounds: Board outline bounds in original coordinates
+        """
+        # Calculate board dimensions
+        b_min_x, b_min_y, b_max_x, b_max_y = board_outline_bounds
+        board_width = b_max_x - b_min_x
+        board_height = b_max_y - b_min_y
+
+        # Calculate transformed corner positions (respecting normalization and offsets)
+        # If normalized, board starts at offset, otherwise at original position + offset
+        if self.normalize_origin:
+            corner_x1 = self.x_offset
+            corner_y1 = self.y_offset
+        else:
+            corner_x1 = b_min_x + self.x_offset
+            corner_y1 = b_min_y + self.y_offset
+
+        corner_x2 = corner_x1 + board_width
+        corner_y2 = corner_y1 + board_height
+
+        f.write("\n")
+        f.write("; Draw board outline (for positioning verification)\n")
+        f.write(f"G1 F{self.feed_rate}  ; Set outline drawing speed\n")
+
+        # Draw rectangle: start at corner 1, go clockwise
+        f.write(f"G0 X{corner_x1:.4f} Y{corner_y1:.4f}  ; Move to corner 1\n")
+        f.write(f"M3 S{self.laser_s_value}  ; Laser on\n")
+        f.write(f"G1 X{corner_x2:.4f} Y{corner_y1:.4f}  ; Draw to corner 2\n")
+        f.write(f"G1 X{corner_x2:.4f} Y{corner_y2:.4f}  ; Draw to corner 3\n")
+        f.write(f"G1 X{corner_x1:.4f} Y{corner_y2:.4f}  ; Draw to corner 4\n")
+        f.write(f"G1 X{corner_x1:.4f} Y{corner_y1:.4f}  ; Draw back to corner 1\n")
+        f.write("M5  ; Laser off\n")
         f.write("\n")
 
     def _write_footer(self, f: TextIO):
