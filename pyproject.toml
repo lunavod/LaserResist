@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laserresist"
+version = "0.1.0"
+description = "Generate laser exposure G-code from Gerber files for negative photoresist PCB fabrication"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Yegor"}
+]
+dependencies = [
+    "gerbonara>=1.0.0",
+    "shapely>=2.0.0",
+    "numpy>=1.20.0",
+    "matplotlib>=3.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+laserresist = "laserresist.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
