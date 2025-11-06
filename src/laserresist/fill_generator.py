@@ -3,7 +3,7 @@
 from typing import List, Union
 from shapely.geometry import MultiPolygon, Polygon, LineString, GeometryCollection, Point, MultiLineString
 from shapely import line_merge
-from shapely.ops import voronoi_diagram, linemerge
+from shapely.ops import voronoi_diagram, linemerge, substring
 
 
 class FillGenerator:
@@ -17,7 +17,7 @@ class FillGenerator:
         """
         self.line_spacing = line_spacing
 
-    def generate_fill(self, geometry: Union[Polygon, MultiPolygon], trace_centerlines: List[LineString] = None) -> List[LineString]:
+    def generate_fill(self, geometry: Union[Polygon, MultiPolygon], trace_centerlines: List[LineString] = None, offset_centerlines: bool = False) -> List[LineString]:
         """Generate fill lines for the given geometry using contour offset method.
 
         This algorithm creates concentric contours by repeatedly offsetting inward,
@@ -26,11 +26,13 @@ class FillGenerator:
         Args:
             geometry: Polygon or MultiPolygon of areas to fill
             trace_centerlines: Optional list of trace centerlines to add to fill
+            offset_centerlines: If True, offset centerlines from both ends by line_spacing (default: False)
 
         Returns:
             List of LineString objects representing laser paths
         """
         paths = []
+        contour_paths = []  # Track contours separately for centerline clipping
 
         # Normalize to MultiPolygon
         if isinstance(geometry, Polygon):
@@ -49,6 +51,7 @@ class FillGenerator:
             # Filter out degenerate geometries (points, very small fragments)
             boundary_paths = [p for p in boundary_paths if p.length > 0.01]  # Min 0.01mm
             paths.extend(boundary_paths)
+            contour_paths.extend(boundary_paths)  # Track for centerline clipping
 
             # Try to buffer inward
             next_geom = self._buffer_incremental(current_geom, self.line_spacing)
@@ -68,6 +71,7 @@ class FillGenerator:
                 if centerlines:
                     print(f"  Adding {len(centerlines)} pad centerlines (iteration {iteration})")
                 paths.extend(centerlines)
+                contour_paths.extend(centerlines)  # These also count as filled areas
                 break
 
             # Continue with the buffered geometry
@@ -81,18 +85,27 @@ class FillGenerator:
                 break
 
         # Now add trace centerlines spanning full trace length
-        # Clip them to slightly inward-buffered geometry to avoid the outer contour
-        # but keep the full trace length from pad to pad
+        # Clip them to avoid areas already filled by contours
         if trace_centerlines:
-            # Buffer inward by half line spacing to avoid overlapping the outermost contour
-            interior_zone = geometry.buffer(-self.line_spacing * 0.5)
-            if not interior_zone.is_empty:
-                clipped_centerlines = self._clip_centerlines_to_geometry(trace_centerlines, interior_zone)
-                print(f"  Adding {len(clipped_centerlines)} full-length trace centerlines (from {len(trace_centerlines)} original)")
+            # Create a "filled zone" from all contour paths
+            # Buffer each contour by half line spacing to represent the laser spot coverage
+            filled_zone = self._create_filled_zone(contour_paths, self.line_spacing / 2.0)
+
+            if not filled_zone.is_empty:
+                # Clip centerlines to avoid the filled zones
+                clipped_centerlines = self._clip_centerlines_avoiding_filled_zones(
+                    trace_centerlines, geometry, filled_zone, offset_centerlines
+                )
+                offset_msg = " with end offsets" if offset_centerlines else ""
+                print(f"  Adding {len(clipped_centerlines)} trace centerlines{offset_msg} avoiding filled zones (from {len(trace_centerlines)} original)")
                 paths.extend(clipped_centerlines)
             else:
-                # If interior is empty, geometry is too small, skip centerlines
-                print(f"  Skipping trace centerlines (geometry too small)")
+                # If no filled zone, use the original geometry clipping
+                interior_zone = geometry.buffer(-self.line_spacing * 0.5)
+                if not interior_zone.is_empty:
+                    clipped_centerlines = self._clip_centerlines_to_geometry(trace_centerlines, interior_zone)
+                    print(f"  Adding {len(clipped_centerlines)} trace centerlines (from {len(trace_centerlines)} original)")
+                    paths.extend(clipped_centerlines)
 
         return paths
 
@@ -332,3 +345,146 @@ class FillGenerator:
 
         # Now clip centerlines to only the unfilled areas
         return self._clip_centerlines_to_geometry(centerlines, unfilled)
+
+    def _create_filled_zone(self, contour_paths: List[LineString], buffer_distance: float) -> Union[Polygon, MultiPolygon]:
+        """Create a filled zone from contour paths by buffering them.
+
+        This represents areas that are already covered by contour fills.
+
+        Args:
+            contour_paths: List of contour LineStrings
+            buffer_distance: Distance to buffer each path (usually half line spacing)
+
+        Returns:
+            Union of all buffered contours representing filled areas
+        """
+        if not contour_paths:
+            return MultiPolygon()
+
+        try:
+            # Buffer each contour path to represent laser coverage area
+            buffered = []
+            for path in contour_paths:
+                if path.length > 0.01:  # Skip very short paths
+                    buf = path.buffer(buffer_distance, cap_style='round', join_style='round')
+                    if not buf.is_empty:
+                        buffered.append(buf)
+
+            if not buffered:
+                return MultiPolygon()
+
+            # Union all buffered areas
+            from shapely.ops import unary_union
+            filled_zone = unary_union(buffered)
+
+            return filled_zone
+
+        except Exception as e:
+            print(f"Warning: Failed to create filled zone: {e}")
+            return MultiPolygon()
+
+    def _clip_centerlines_avoiding_filled_zones(
+        self,
+        centerlines: List[LineString],
+        original_geometry: Union[Polygon, MultiPolygon],
+        filled_zone: Union[Polygon, MultiPolygon],
+        offset_ends: bool = False
+    ) -> List[LineString]:
+        """Clip trace centerlines to avoid areas already filled by contours.
+
+        This ensures centerlines only traverse narrow trace corridors between pads.
+        Optionally offsets the centerlines from both ends by line_spacing to create a gap.
+
+        Args:
+            centerlines: Original trace centerlines
+            original_geometry: Original copper geometry
+            filled_zone: Areas already covered by contour fills
+            offset_ends: If True, offset centerlines from both ends by line_spacing
+
+        Returns:
+            List of clipped and optionally offset centerlines that avoid filled zones
+        """
+        clipped = []
+        # Set minimum length threshold based on whether we're offsetting
+        min_length_threshold = self.line_spacing * 2.5 if offset_ends else 0.01
+
+        for line in centerlines:
+            try:
+                # Calculate the unfilled corridor where the centerline should go
+                # This is the original geometry minus the filled zones
+                unfilled_corridor = original_geometry.difference(filled_zone)
+
+                if unfilled_corridor.is_empty:
+                    continue
+
+                # Intersect the centerline with the unfilled corridor
+                intersection = line.intersection(unfilled_corridor)
+
+                # Collect segments to process
+                segments = []
+                if intersection.is_empty:
+                    continue
+                elif isinstance(intersection, LineString):
+                    segments.append(intersection)
+                elif isinstance(intersection, MultiLineString):
+                    segments.extend(intersection.geoms)
+                elif isinstance(intersection, GeometryCollection):
+                    # Extract only LineStrings from the collection
+                    for geom in intersection.geoms:
+                        if isinstance(geom, LineString):
+                            segments.append(geom)
+                        elif isinstance(geom, MultiLineString):
+                            segments.extend(geom.geoms)
+
+                # Process each segment: optionally offset from both ends and check length
+                for segment in segments:
+                    if offset_ends:
+                        trimmed = self._offset_line_from_ends(segment, self.line_spacing)
+                        if trimmed and trimmed.length >= min_length_threshold:
+                            clipped.append(trimmed)
+                    else:
+                        # No offsetting, just check minimum length
+                        if segment.length >= min_length_threshold:
+                            clipped.append(segment)
+
+            except Exception as e:
+                # If clipping fails, skip this centerline
+                print(f"Warning: Failed to clip centerline: {e}")
+                pass
+
+        return clipped
+
+    def _offset_line_from_ends(self, line: LineString, offset: float) -> LineString:
+        """Offset a line from both ends by the specified distance.
+
+        Args:
+            line: Original LineString
+            offset: Distance to trim from each end
+
+        Returns:
+            Trimmed LineString, or None if the line is too short
+        """
+        try:
+            total_length = line.length
+
+            # If line is too short to offset, return None
+            if total_length <= offset * 2:
+                return None
+
+            # Get points at offset distance from start and end
+            start_point = line.interpolate(offset)
+            end_point = line.interpolate(total_length - offset)
+
+            # Create new line from trimmed points
+            # We need to extract the subsegment between these two points
+            start_dist = offset
+            end_dist = total_length - offset
+
+            # Create a substring of the line
+            trimmed_line = substring(line, start_dist, end_dist)
+
+            return trimmed_line
+
+        except Exception as e:
+            # If offsetting fails, return None
+            return None
