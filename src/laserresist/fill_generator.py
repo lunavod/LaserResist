@@ -9,18 +9,20 @@ from shapely.ops import voronoi_diagram, linemerge, substring
 class FillGenerator:
     """Generate fill patterns for polygon areas."""
 
-    def __init__(self, line_spacing: float = 0.1, initial_offset: float = 0.05):
+    def __init__(self, line_spacing: float = 0.1, initial_offset: float = 0.05, forced_pad_centerlines: bool = False):
         """Initialize the fill generator.
 
         Args:
             line_spacing: Spacing between fill lines in mm
             initial_offset: Initial inward offset of outer boundaries to compensate for laser dot size in mm (default: 0.05)
                           This shrinks the outermost contour while keeping internal fill structure unchanged.
+            forced_pad_centerlines: Add centerlines to all pads regardless of size (default: False)
         """
         self.line_spacing = line_spacing
         self.initial_offset = initial_offset
+        self.forced_pad_centerlines = forced_pad_centerlines
 
-    def generate_fill(self, geometry: Union[Polygon, MultiPolygon], trace_centerlines: List[LineString] = None, offset_centerlines: bool = False) -> List[LineString]:
+    def generate_fill(self, geometry: Union[Polygon, MultiPolygon], trace_centerlines: List[LineString] = None, offset_centerlines: bool = False, pads: List[dict] = None, drill_holes: Union[Polygon, MultiPolygon] = None) -> List[LineString]:
         """Generate fill lines for the given geometry using contour offset method.
 
         This algorithm creates concentric contours by repeatedly offsetting inward,
@@ -44,6 +46,15 @@ class FillGenerator:
         # Detect thin annular pads from the ORIGINAL geometry before any buffering
         original_geometry = geometry
         thin_annular_rings = self._detect_thin_annular_pads_at_start(original_geometry)
+
+        # Add forced pad centerlines if requested
+        forced_pad_paths = []
+        if self.forced_pad_centerlines:
+            forced_pad_paths = self._generate_forced_pad_centerlines(pads, drill_holes, thin_annular_rings)
+            if forced_pad_paths:
+                print(f"  Adding {len(forced_pad_paths)} forced pad centerlines")
+                paths.extend(forced_pad_paths)
+                contour_paths.extend(forced_pad_paths)
 
         # Start with the original geometry
         current_geom = geometry
@@ -598,3 +609,157 @@ class FillGenerator:
                     pass
 
         return rings
+
+    def _generate_forced_pad_centerlines(self, pads: List[dict], drill_holes: Union[Polygon, MultiPolygon, None], existing_thin_rings: List[LineString]) -> List[LineString]:
+        """Generate forced centerlines for all pads using actual pad info from Gerber.
+
+        Args:
+            pads: List of pad dictionaries from GerberParser.get_pads()
+            drill_holes: Drill hole geometry to subtract from pads
+            existing_thin_rings: List of already-generated thin annular pad circles to avoid duplication
+
+        Returns:
+            List of LineString centerlines for pads
+        """
+        from shapely.geometry import Point, MultiLineString
+        from math import pi, cos, sin
+
+        if not pads:
+            return []
+
+        centerlines = []
+
+        # Track which pads already have thin ring circles to avoid duplicates
+        existing_ring_centroids = []
+        if existing_thin_rings:
+            for ring in existing_thin_rings:
+                coords = list(ring.coords)
+                if coords:
+                    center_x = sum(x for x, y in coords) / len(coords)
+                    center_y = sum(y for x, y in coords) / len(coords)
+                    existing_ring_centroids.append((center_x, center_y))
+
+        for pad in pads:
+            aperture_type = pad['aperture_type']
+            position = pad['position']
+
+            # Check if duplicate (already has thin ring)
+            is_duplicate = False
+            for ex_x, ex_y in existing_ring_centroids:
+                if abs(position[0] - ex_x) < 0.1 and abs(position[1] - ex_y) < 0.1:
+                    is_duplicate = True
+                    break
+
+            if is_duplicate:
+                continue
+
+            # Start with the original pad geometry
+            poly = pad['geometry']
+
+            # Subtract any drill holes that intersect this pad
+            if drill_holes and not drill_holes.is_empty:
+                poly = poly.difference(drill_holes)
+
+            # Apply initial offset inward (same as for outer contours)
+            if self.initial_offset > 0:
+                poly = poly.buffer(-self.initial_offset)
+
+            # Handle case where operations return GeometryCollection, MultiPolygon, or empty
+            if poly.is_empty:
+                continue
+            if not isinstance(poly, Polygon):
+                # If we got a MultiPolygon or GeometryCollection, take the largest polygon
+                if hasattr(poly, 'geoms'):
+                    polys = [g for g in poly.geoms if isinstance(g, Polygon)]
+                    if not polys:
+                        continue
+                    poly = max(polys, key=lambda p: p.area)
+                else:
+                    continue
+
+            has_hole = len(poly.interiors) > 0
+            centroid = poly.centroid
+            bounds = poly.bounds
+
+            if aperture_type == 'circle':
+                if has_hole:
+                    # Donut pad - add circle in middle of ring
+                    exterior = poly.exterior
+                    interior = poly.interiors[0]
+
+                    ext_coords = list(exterior.coords)
+                    int_coords = list(interior.coords)
+
+                    outer_distances = [Point(x, y).distance(centroid) for x, y in ext_coords]
+                    inner_distances = [Point(x, y).distance(centroid) for x, y in int_coords]
+
+                    outer_radius = sum(outer_distances) / len(outer_distances)
+                    inner_radius = sum(inner_distances) / len(inner_distances)
+
+                    mid_radius = (outer_radius + inner_radius) / 2.0
+
+                    # Generate circle
+                    num_points = max(16, int(2 * pi * mid_radius / (self.line_spacing / 2)))
+                    coords = []
+                    for i in range(num_points + 1):
+                        angle = 2 * pi * i / num_points
+                        x = centroid.x + mid_radius * cos(angle)
+                        y = centroid.y + mid_radius * sin(angle)
+                        coords.append((x, y))
+
+                    if len(coords) >= 2:
+                        try:
+                            centerlines.append(LineString(coords))
+                        except:
+                            pass
+                else:
+                    # Circular pad without hole - add circle at radius/2
+                    exterior_coords = list(poly.exterior.coords)
+                    distances = [Point(x, y).distance(centroid) for x, y in exterior_coords]
+                    radius = sum(distances) / len(distances)
+
+                    circle_radius = radius / 2.0
+
+                    num_points = max(16, int(2 * pi * circle_radius / (self.line_spacing / 2)))
+                    coords = []
+                    for i in range(num_points + 1):
+                        angle = 2 * pi * i / num_points
+                        x = centroid.x + circle_radius * cos(angle)
+                        y = centroid.y + circle_radius * sin(angle)
+                        coords.append((x, y))
+
+                    if len(coords) >= 2:
+                        try:
+                            centerlines.append(LineString(coords))
+                        except:
+                            pass
+
+            elif aperture_type == 'rectangle':
+                # Rectangular pad - add AXIS-ALIGNED + from center
+                try:
+                    cx, cy = centroid.x, centroid.y
+
+                    # Horizontal line through center
+                    h_line = LineString([(bounds[0], cy), (bounds[2], cy)])
+                    # Vertical line through center
+                    v_line = LineString([(cx, bounds[1]), (cx, bounds[3])])
+
+                    # Clip to actual pad geometry (handles holes)
+                    h_clipped = h_line.intersection(poly)
+                    v_clipped = v_line.intersection(poly)
+
+                    # Add valid segments
+                    for clipped in [h_clipped, v_clipped]:
+                        if clipped.is_empty:
+                            continue
+                        elif isinstance(clipped, LineString):
+                            if clipped.length > 0.01:
+                                centerlines.append(clipped)
+                        elif isinstance(clipped, MultiLineString):
+                            for segment in clipped.geoms:
+                                if segment.length > 0.01:
+                                    centerlines.append(segment)
+                except:
+                    pass
+
+        return centerlines

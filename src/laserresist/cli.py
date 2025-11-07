@@ -174,6 +174,11 @@ Examples:
         help="Initial inward offset of outer boundaries to compensate for laser dot size in mm (default: 0.05)",
     )
     fill_group.add_argument(
+        "--forced-pad-centerlines",
+        action="store_true",
+        help="Add centerlines to all pads: + for rectangular, circles for round (default: False)",
+    )
+    fill_group.add_argument(
         "--offset-centerlines",
         action="store_true",
         help="Offset trace centerlines from ends (default: False)",
@@ -327,6 +332,7 @@ Examples:
     # Get all settings
     line_spacing = get_value('line_spacing', default=0.1)
     initial_offset = get_value('initial_offset', default=0.05)
+    forced_pad_centerlines = get_value('forced_pad_centerlines', default=False)
     offset_centerlines = get_value('offset_centerlines', default=False)
 
     laser_power = get_value('laser_power', default=2.0)
@@ -372,8 +378,10 @@ Examples:
 
     # Generate fill
     print(f"\nGenerating fill paths...")
-    fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset)
-    paths = fill_gen.generate_fill(geometry, trace_centerlines=trace_centerlines, offset_centerlines=offset_centerlines)
+    pads = parser.get_pads()
+    drill_holes = parser.get_drill_holes()
+    fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset, forced_pad_centerlines=forced_pad_centerlines)
+    paths = fill_gen.generate_fill(geometry, trace_centerlines=trace_centerlines, offset_centerlines=offset_centerlines, pads=pads, drill_holes=drill_holes)
 
     total_length = sum(path.length for path in paths)
     print(f"  Generated {len(paths)} paths")

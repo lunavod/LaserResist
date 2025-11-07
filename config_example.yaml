@@ -4,6 +4,7 @@
 # Fill generation
 line_spacing: 0.1          # Spacing between fill lines in mm
 initial_offset: 0.05       # Initial inward offset of outer boundaries to compensate for laser dot size in mm
+forced_pad_centerlines: false  # Add centerlines to all pads (+ for rectangular, circles for round)
 offset_centerlines: false  # Offset trace centerlines from ends
 
 # Laser settings

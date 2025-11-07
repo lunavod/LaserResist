@@ -90,6 +90,11 @@ High precision:
 laserresist board.gtl --line-spacing 0.05 --initial-offset 0.03 --offset-centerlines -o output.gcode
 ```
 
+With forced pad centerlines for better pad coverage:
+```bash
+laserresist board.gtl --forced-pad-centerlines -o output.gcode
+```
+
 ---
 
 ## Parameter Reference
@@ -117,6 +122,7 @@ laserresist board.gtl --line-spacing 0.05 --initial-offset 0.03 --offset-centerl
 |-----------|------|---------|-------------|
 | `--line-spacing` | Float | `0.1` | Spacing between fill lines in mm |
 | `--initial-offset` | Float | `0.05` | Inward offset of outer boundaries in mm (compensates for laser dot size) |
+| `--forced-pad-centerlines` | Flag | `false` | Add centerlines to all pads: + for rectangular, circles for round |
 | `--offset-centerlines` | Flag | `false` | Offset trace centerlines from ends by line_spacing distance |
 
 ### Laser Settings
@@ -168,6 +174,7 @@ Save settings in JSON or YAML files:
 # Fill generation
 line_spacing: 0.1          # Spacing between fill lines in mm
 initial_offset: 0.05       # Initial inward offset of outer boundaries to compensate for laser dot size in mm
+forced_pad_centerlines: false  # Add centerlines to all pads (+ for rectangular, circles for round)
 offset_centerlines: false  # Offset trace centerlines from ends
 
 # Laser settings
@@ -200,6 +207,7 @@ outline_offset_count: 0              # Offset copies: 0=single, -1=one outward, 
 {
   "line_spacing": 0.1,
   "initial_offset": 0.05,
+  "forced_pad_centerlines": false,
   "offset_centerlines": false,
   "laser_power": 6.0,
   "feed_rate": 1400.0,
@@ -245,6 +253,7 @@ Converts Gerber primitives to Shapely polygons, subtracts drill holes, extracts 
 3. When areas become too thin, add centerlines for complete coverage
 4. Add trace centerlines, clipped to avoid pad areas
 5. Special handling for thin annular pads (circular centerlines)
+6. Optional forced pad centerlines: uses actual Gerber Flash objects to add centerlines to all pads (+ for rectangular, circles for round)
 
 **G-code generation:**
 Transforms coordinates, adds initialization (homing, bed mesh), converts paths to G1 moves with laser control (M106/M107), includes safety features.
@@ -292,6 +301,7 @@ M84 ; Motors off
 - For gaps or incomplete fills, decrease `line_spacing`
 - For traces wider than designed, increase `initial_offset`
 - For traces narrower than designed, decrease `initial_offset`
+- Use `--forced-pad-centerlines` for better pad center exposure (recommended for fine pitch components)
 
 **Speed vs quality:**
 ```

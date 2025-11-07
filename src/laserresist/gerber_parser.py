@@ -25,6 +25,8 @@ class GerberParser:
         self.layer: GerberFile = None
         self.polygons: List[Polygon] = []
         self.trace_centerlines: List[LineString] = []  # Store trace centerlines
+        self.pads: List[dict] = []  # Store pad geometry with aperture info
+        self.drill_holes: Union[MultiPolygon, Polygon, None] = None  # Store drill hole geometry
 
     def parse(self) -> Union[MultiPolygon, Polygon]:
         """Parse the Gerber file and return copper geometry.
@@ -39,15 +41,19 @@ class GerberParser:
         # Each graphic object needs to be converted to primitives, then to arc polygons
         geometries = []
         self.trace_centerlines = []  # Reset centerlines
+        self.pads = []  # Reset pads
 
         # Iterate through all graphics objects in the layer
         for obj in self.layer.objects:
+            # Check if this is a Flash object (pad)
+            is_flash = type(obj).__name__ == 'Flash'
             try:
                 # Convert object to primitives (unit: MM)
                 primitives = obj.to_primitives(MM)
 
                 # Convert each primitive to a Shapely polygon
                 for prim in primitives:
+                    poly = None
                     # Special handling for Circle primitives (pads with circular apertures)
                     if isinstance(prim, Circle):
                         # Circles need to be created using Point.buffer()
@@ -57,6 +63,14 @@ class GerberParser:
                         poly = center.buffer(radius)
                         if poly.is_valid and not poly.is_empty:
                             geometries.append(poly)
+                            # Store pad info if this is a Flash
+                            if is_flash:
+                                self.pads.append({
+                                    'geometry': poly,
+                                    'aperture_type': 'circle',
+                                    'position': (prim.x, prim.y),
+                                    'size': radius * 2
+                                })
                     # Special handling for Line primitives (traces with circular apertures)
                     elif isinstance(prim, GerberLine):
                         # Lines should have circular caps for proper connectivity at angles
@@ -82,6 +96,25 @@ class GerberParser:
                             poly = Polygon(arc_poly.outline)
                             if poly.is_valid and not poly.is_empty:
                                 geometries.append(poly)
+                                # Store pad info if this is a Flash
+                                if is_flash and hasattr(obj, 'aperture'):
+                                    # Get aperture info
+                                    aperture = obj.aperture
+                                    aperture_str = str(aperture)
+                                    # Determine type from aperture string
+                                    if 'circle' in aperture_str.lower():
+                                        ap_type = 'circle'
+                                    elif 'rect' in aperture_str.lower():
+                                        ap_type = 'rectangle'
+                                    else:
+                                        ap_type = 'other'
+
+                                    self.pads.append({
+                                        'geometry': poly,
+                                        'aperture_type': ap_type,
+                                        'position': (obj.x, obj.y),
+                                        'aperture': aperture
+                                    })
 
             except Exception as e:
                 # Skip objects we can't convert
@@ -97,6 +130,7 @@ class GerberParser:
 
         # Parse drill files and subtract holes from copper
         holes = self._parse_drill_holes()
+        self.drill_holes = holes  # Store for later use
         if holes and not holes.is_empty:
             # Subtract holes from the unified copper geometry
             unified = unified.difference(holes)
@@ -211,3 +245,23 @@ class GerberParser:
             List of LineString centerlines from trace objects
         """
         return self.trace_centerlines
+
+    def get_pads(self) -> List[dict]:
+        """Get pad geometries with aperture information.
+
+        Returns:
+            List of dictionaries containing pad info:
+            - 'geometry': Shapely Polygon
+            - 'aperture_type': 'circle', 'rectangle', or 'other'
+            - 'position': (x, y) coordinates
+            - Additional aperture info
+        """
+        return self.pads
+
+    def get_drill_holes(self) -> Union[MultiPolygon, Polygon, None]:
+        """Get drill hole geometry.
+
+        Returns:
+            MultiPolygon or Polygon of all drill holes, or None if no drill files
+        """
+        return self.drill_holes
