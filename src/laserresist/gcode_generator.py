@@ -126,9 +126,10 @@ class GCodeGenerator:
                 print(f"  Set x_offset and y_offset to at least {required_offset:.2f}mm to avoid issues.")
                 print(f"  Note: Negative offsets move the effective board position!")
 
-        # TODO: Calculate time estimate
+        # Calculate time estimate
+        self.time_estimate_minutes = self._calculate_time_estimate(paths)
+
         # TODO: Add custom start G-code support
-        # TODO: Add M73 progress reporting
 
         self._write_header(output_file, bounds, transformed_bounds, board_outline_bounds)
         self._write_paths(output_file, paths)
@@ -182,7 +183,16 @@ class GCodeGenerator:
             f.write(f"; Output copper bounds: ({t_min_x:.2f}, {t_min_y:.2f}) to ({t_max_x:.2f}, {t_max_y:.2f}) mm\n")
 
         f.write(";\n")
-        f.write("; TODO: Time estimate will be displayed here\n")
+        # Format time estimate
+        hours = int(self.time_estimate_minutes // 60)
+        minutes = int(self.time_estimate_minutes % 60)
+        seconds = int((self.time_estimate_minutes % 1) * 60)
+        if hours > 0:
+            f.write(f"; Estimated time: {hours}h {minutes}m {seconds}s ({self.time_estimate_minutes:.1f} minutes)\n")
+        elif minutes > 0:
+            f.write(f"; Estimated time: {minutes}m {seconds}s ({self.time_estimate_minutes:.1f} minutes)\n")
+        else:
+            f.write(f"; Estimated time: {seconds}s ({self.time_estimate_minutes:.2f} minutes)\n")
         f.write(";\n\n")
 
         # TODO: Custom start G-code will be inserted here
@@ -222,16 +232,27 @@ class GCodeGenerator:
             paths: List of paths to trace
         """
         f.write("; Begin laser exposure\n")
-        f.write(f"G1 F{self.feed_rate}  ; Set exposure speed\n\n")
+        f.write(f"G1 F{self.feed_rate}  ; Set exposure speed\n")
+        f.write("M73 P0 R{:.0f}  ; Progress 0%, estimated time remaining\n\n".format(self.time_estimate_minutes))
 
         total_paths = len(paths)
+        cumulative_time = 0.0  # Track elapsed time in minutes
+        last_m73_time = 0.0  # Track when we last emitted M73
+        m73_interval = 3.0 / 60.0  # 3 seconds in minutes (respects Klipper 5s timeout)
+        prev_end_pos = None  # Track previous path end position for travel distance
 
         for i, path in enumerate(paths):
-            # TODO: Add M73 progress reporting every N paths
-
             coords = list(path.coords)
             if len(coords) < 2:
                 continue  # Skip degenerate paths
+
+            # Emit M73 if we've accumulated 3+ seconds since last update, or first/last path
+            time_since_last_m73 = cumulative_time - last_m73_time
+            if time_since_last_m73 >= m73_interval or i == 0 or i == total_paths - 1:
+                current_progress_percent = min(100.0, (cumulative_time / self.time_estimate_minutes) * 100.0)
+                remaining_minutes = max(0, self.time_estimate_minutes - cumulative_time)
+                f.write(f"M73 P{current_progress_percent:.1f} R{int(remaining_minutes)}  ; Progress {current_progress_percent:.1f}%\n")
+                last_m73_time = cumulative_time
 
             # Comment with path info
             f.write(f"; Path {i+1}/{total_paths} (length: {path.length:.2f}mm)\n")
@@ -241,11 +262,23 @@ class GCodeGenerator:
             start_x_transformed = start_x + self.transform_x
             start_y_transformed = start_y + self.transform_y
 
+            # Add travel time if not first path
+            if prev_end_pos is not None:
+                dx = start_x - prev_end_pos[0]
+                dy = start_y - prev_end_pos[1]
+                travel_distance = (dx**2 + dy**2) ** 0.5
+                travel_time = travel_distance / self.travel_rate
+                cumulative_time += travel_time
+
             # Rapid to start position with laser off
             f.write(f"G0 X{start_x_transformed:.4f} Y{start_y_transformed:.4f}  ; Move to start\n")
 
             # Turn laser on
             f.write(f"M3 S{self.laser_s_value}  ; Laser on\n")
+
+            # Update cumulative time with path exposure time
+            path_time = path.length / self.feed_rate
+            cumulative_time += path_time
 
             # Trace the path with transformed coordinates
             for x, y in coords[1:]:
@@ -256,6 +289,9 @@ class GCodeGenerator:
             # Turn laser off
             f.write("M5  ; Laser off\n")
             f.write("\n")
+
+            # Store end position for next travel calculation
+            prev_end_pos = coords[-1]
 
     def _write_bed_mesh_calibration(self, f: TextIO, board_outline_bounds: tuple):
         """Write bed mesh calibration command.
@@ -360,6 +396,46 @@ class GCodeGenerator:
 
         f.write("\n")
 
+    def _calculate_time_estimate(self, paths: List[LineString]) -> float:
+        """Calculate estimated time for exposure in minutes.
+
+        Args:
+            paths: List of paths to trace
+
+        Returns:
+            Estimated time in minutes
+        """
+        if not paths:
+            return 0.0
+
+        # Calculate exposure time (path lengths at feed rate)
+        total_exposure_length = sum(path.length for path in paths)
+        exposure_time_minutes = total_exposure_length / self.feed_rate
+
+        # Estimate travel distance (between paths)
+        # Approximate as distance between end of one path and start of next
+        travel_distance = 0.0
+        for i in range(len(paths) - 1):
+            current_end = paths[i].coords[-1]
+            next_start = paths[i + 1].coords[0]
+            # Euclidean distance
+            dx = next_start[0] - current_end[0]
+            dy = next_start[1] - current_end[1]
+            travel_distance += (dx**2 + dy**2) ** 0.5
+
+        travel_time_minutes = travel_distance / self.travel_rate
+
+        # Add overhead for laser on/off operations (assume 0.1 second per path)
+        num_paths = len(paths)
+        overhead_minutes = (num_paths * 0.1) / 60.0
+
+        # Add small buffer for acceleration/deceleration (5%)
+        buffer_factor = 1.05
+
+        total_time = (exposure_time_minutes + travel_time_minutes + overhead_minutes) * buffer_factor
+
+        return total_time
+
     def _write_footer(self, f: TextIO):
         """Write G-code footer with shutdown commands.
 
@@ -367,6 +443,7 @@ class GCodeGenerator:
             f: File handle
         """
         f.write("; End of exposure\n")
+        f.write("M73 P100 R0  ; Progress 100% complete\n")
         f.write("M5          ; Ensure laser is off\n")
 
         # Disarm laser (optional)

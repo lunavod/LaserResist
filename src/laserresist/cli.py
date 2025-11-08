@@ -378,8 +378,8 @@ Examples:
 
     # Generate fill
     print(f"\nGenerating fill paths...")
-    pads = parser.get_pads()
-    drill_holes = parser.get_drill_holes()
+    pads = parser_obj.get_pads()
+    drill_holes = parser_obj.get_drill_holes()
     fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset, forced_pad_centerlines=forced_pad_centerlines)
     paths = fill_gen.generate_fill(geometry, trace_centerlines=trace_centerlines, offset_centerlines=offset_centerlines, pads=pads, drill_holes=drill_holes)
 
@@ -410,7 +410,21 @@ Examples:
     with open(output_file, 'w') as f:
         gcode_gen.generate(paths, f, bounds, board_outline_bounds)
 
+    # Format and display time estimate
+    time_minutes = gcode_gen.time_estimate_minutes
+    hours = int(time_minutes // 60)
+    minutes = int(time_minutes % 60)
+    seconds = int((time_minutes % 1) * 60)
+
+    if hours > 0:
+        time_str = f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        time_str = f"{minutes}m {seconds}s"
+    else:
+        time_str = f"{seconds}s"
+
     print(f"\n✓ G-code saved to: {output_file}")
+    print(f"  Estimated exposure time: {time_str}")
 
     return 0
 
