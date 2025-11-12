@@ -11,22 +11,26 @@ from gerbonara.graphic_primitives import Circle, Line as GerberLine
 class GerberParser:
     """Parse Gerber files and extract copper geometry."""
 
-    def __init__(self, file_path: Path, drill_pth_path: Optional[Path] = None, drill_via_path: Optional[Path] = None):
+    def __init__(self, file_path: Path, drill_pth_path: Optional[Path] = None, drill_via_path: Optional[Path] = None, drill_npth_path: Optional[Path] = None):
         """Initialize the parser with a Gerber file.
 
         Args:
             file_path: Path to the Gerber file
             drill_pth_path: Optional path to PTH (Plated Through Hole) drill file
             drill_via_path: Optional path to Via drill file
+            drill_npth_path: Optional path to NPTH (Non-Plated Through Hole) drill file
         """
         self.file_path = file_path
         self.drill_pth_path = drill_pth_path
         self.drill_via_path = drill_via_path
+        self.drill_npth_path = drill_npth_path
         self.layer: GerberFile = None
         self.polygons: List[Polygon] = []
         self.trace_centerlines: List[LineString] = []  # Store trace centerlines
         self.pads: List[dict] = []  # Store pad geometry with aperture info
         self.drill_holes: Union[MultiPolygon, Polygon, None] = None  # Store drill hole geometry
+        self.drill_holes_pth: List[dict] = []  # Store PTH holes separately (x, y, diameter)
+        self.drill_holes_npth: List[dict] = []  # Store NPTH holes separately (x, y, diameter)
 
     def parse(self) -> Union[MultiPolygon, Polygon]:
         """Parse the Gerber file and return copper geometry.
@@ -154,6 +158,8 @@ class GerberParser:
             MultiPolygon of all drill holes, or None if no drill files
         """
         hole_circles = []
+        self.drill_holes_pth = []  # Reset PTH holes list
+        self.drill_holes_npth = []  # Reset NPTH holes list
 
         # Parse PTH drill file
         if self.drill_pth_path and self.drill_pth_path.exists():
@@ -170,6 +176,8 @@ class GerberParser:
                             radius = diameter / 2
                             hole = Point(x, y).buffer(radius)
                             hole_circles.append(hole)
+                            # Store PTH hole info
+                            self.drill_holes_pth.append({'x': x, 'y': y, 'diameter': diameter})
             except Exception as e:
                 print(f"Warning: Could not parse PTH drill file: {e}")
 
@@ -186,8 +194,28 @@ class GerberParser:
                             radius = diameter / 2
                             hole = Point(x, y).buffer(radius)
                             hole_circles.append(hole)
+                            # Store as PTH hole (vias are plated)
+                            self.drill_holes_pth.append({'x': x, 'y': y, 'diameter': diameter})
             except Exception as e:
                 print(f"Warning: Could not parse Via drill file: {e}")
+
+        # Parse NPTH drill file
+        if self.drill_npth_path and self.drill_npth_path.exists():
+            try:
+                drill_file = ExcellonFile.open(str(self.drill_npth_path))
+                for obj in drill_file.objects:
+                    if hasattr(obj, 'x') and hasattr(obj, 'y') and hasattr(obj, 'tool'):
+                        x = obj.x
+                        y = obj.y
+                        diameter = obj.tool.diameter if obj.tool and hasattr(obj.tool, 'diameter') else 0
+                        if diameter > 0:
+                            radius = diameter / 2
+                            hole = Point(x, y).buffer(radius)
+                            hole_circles.append(hole)
+                            # Store NPTH hole info
+                            self.drill_holes_npth.append({'x': x, 'y': y, 'diameter': diameter})
+            except Exception as e:
+                print(f"Warning: Could not parse NPTH drill file: {e}")
 
         # Union all holes
         if not hole_circles:
@@ -265,3 +293,19 @@ class GerberParser:
             MultiPolygon or Polygon of all drill holes, or None if no drill files
         """
         return self.drill_holes
+
+    def get_drill_holes_pth(self) -> List[dict]:
+        """Get PTH drill holes as list of dictionaries.
+
+        Returns:
+            List of dicts with keys: x, y, diameter
+        """
+        return self.drill_holes_pth
+
+    def get_drill_holes_npth(self) -> List[dict]:
+        """Get NPTH drill holes as list of dictionaries.
+
+        Returns:
+            List of dicts with keys: x, y, diameter
+        """
+        return self.drill_holes_npth

@@ -1,11 +1,15 @@
 # LaserResist Configuration File
 # All settings are optional - defaults will be used if not specified
 
+# Gerber file selection (for folder auto-detection)
+side: "front"              # PCB side: "front"/"top" (default) or "back"/"bottom"
+
 # Fill generation
 line_spacing: 0.1          # Spacing between fill lines in mm
 initial_offset: 0.05       # Initial inward offset of outer boundaries to compensate for laser dot size in mm
 forced_pad_centerlines: false  # Add centerlines to all pads (+ for rectangular, circles for round)
 offset_centerlines: false  # Offset trace centerlines from ends
+force_trace_centerlines: false  # Force all trace centerlines without clipping to avoid filled zones
 
 # Laser settings
 laser_power: 6.0           # Laser power percentage (0-100)
@@ -17,6 +21,7 @@ z_height: 20.0             # Z height for laser focus in mm
 x_offset: 0.0              # X offset in mm
 y_offset: 0.0              # Y offset in mm
 # normalize_origin: true   # Normalize coordinates (handled by --no-normalize CLI flag)
+flip_horizontal: false     # Flip board horizontally (mirror X axis) - use true for bottom layer
 
 # Bed mesh calibration (optional)
 bed_mesh: true             # Enable bed mesh calibration
@@ -33,3 +38,15 @@ outline_offset_count: 0              # Offset copies: 0=single, -1=one outward, 
                                      # NOTE: Negative (outward) requires x_offset/y_offset >= abs(count) * line_spacing
                                      # Positive (inward) for boards with space between outline and copper
                                      # Negative (outward) shifts effective board position - use with care!
+
+# Pin alignment mode (optional, requires --pin-mode)
+# pin_macro: true     # Use SETUP_PCB_SPACE macro for alignment (requires macro on printer)
+#                     # If false/not set, uses software-based coordinate transformation
+
+# Drilling template generation (requires --pin-mode)
+generate_template_stl: false         # Generate 3D-printable drilling template STL
+# stl_name: "template.stl"           # Custom STL filename (default: same as gcode with .stl)
+template_block_height: 4.0           # Height of template block in mm
+template_wall_thickness: 2.0         # Thickness of alignment walls in mm
+hole_print_tolerance: 0.2            # Extra diameter for 3D print compensation in mm
+pcb_safety_offset: 0.0               # Extra margin around board in mm (makes template bigger on all sides)

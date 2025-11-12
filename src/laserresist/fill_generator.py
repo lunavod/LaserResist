@@ -9,7 +9,7 @@ from shapely.ops import voronoi_diagram, linemerge, substring
 class FillGenerator:
     """Generate fill patterns for polygon areas."""
 
-    def __init__(self, line_spacing: float = 0.1, initial_offset: float = 0.05, forced_pad_centerlines: bool = False):
+    def __init__(self, line_spacing: float = 0.1, initial_offset: float = 0.05, forced_pad_centerlines: bool = False, force_trace_centerlines: bool = False):
         """Initialize the fill generator.
 
         Args:
@@ -17,10 +17,12 @@ class FillGenerator:
             initial_offset: Initial inward offset of outer boundaries to compensate for laser dot size in mm (default: 0.05)
                           This shrinks the outermost contour while keeping internal fill structure unchanged.
             forced_pad_centerlines: Add centerlines to all pads regardless of size (default: False)
+            force_trace_centerlines: Force all trace centerlines without clipping to avoid filled zones (default: False)
         """
         self.line_spacing = line_spacing
         self.initial_offset = initial_offset
         self.forced_pad_centerlines = forced_pad_centerlines
+        self.force_trace_centerlines = force_trace_centerlines
 
     def generate_fill(self, geometry: Union[Polygon, MultiPolygon], trace_centerlines: List[LineString] = None, offset_centerlines: bool = False, pads: List[dict] = None, drill_holes: Union[Polygon, MultiPolygon] = None) -> List[LineString]:
         """Generate fill lines for the given geometry using contour offset method.
@@ -118,27 +120,44 @@ class FillGenerator:
                 break
 
         # Now add trace centerlines spanning full trace length
-        # Clip them to avoid areas already filled by contours
+        # Clip them to avoid areas already filled by contours (unless force_trace_centerlines is True)
         if trace_centerlines:
-            # Create a "filled zone" from all contour paths
-            # Buffer each contour by half line spacing to represent the laser spot coverage
-            filled_zone = self._create_filled_zone(contour_paths, self.line_spacing / 2.0)
-
-            if not filled_zone.is_empty:
-                # Clip centerlines to avoid the filled zones
-                clipped_centerlines = self._clip_centerlines_avoiding_filled_zones(
-                    trace_centerlines, geometry, filled_zone, offset_centerlines
-                )
-                offset_msg = " with end offsets" if offset_centerlines else ""
-                print(f"  Adding {len(clipped_centerlines)} trace centerlines{offset_msg} avoiding filled zones (from {len(trace_centerlines)} original)")
-                paths.extend(clipped_centerlines)
+            if self.force_trace_centerlines:
+                # Force mode: add all trace centerlines without clipping
+                # Optionally offset from ends if requested
+                if offset_centerlines:
+                    processed_centerlines = []
+                    for line in trace_centerlines:
+                        trimmed = self._offset_line_from_ends(line, self.line_spacing)
+                        if trimmed and trimmed.length >= self.line_spacing * 2.5:
+                            processed_centerlines.append(trimmed)
+                    offset_msg = " with end offsets"
+                else:
+                    processed_centerlines = [line for line in trace_centerlines if line.length > 0.01]
+                    offset_msg = ""
+                print(f"  Adding {len(processed_centerlines)} forced trace centerlines{offset_msg} (unclipped)")
+                paths.extend(processed_centerlines)
             else:
-                # If no filled zone, use the original geometry clipping
-                interior_zone = geometry.buffer(-self.line_spacing * 0.5)
-                if not interior_zone.is_empty:
-                    clipped_centerlines = self._clip_centerlines_to_geometry(trace_centerlines, interior_zone)
-                    print(f"  Adding {len(clipped_centerlines)} trace centerlines (from {len(trace_centerlines)} original)")
+                # Normal mode: clip centerlines to avoid filled zones
+                # Create a "filled zone" from all contour paths
+                # Buffer each contour by half line spacing to represent the laser spot coverage
+                filled_zone = self._create_filled_zone(contour_paths, self.line_spacing / 2.0)
+
+                if not filled_zone.is_empty:
+                    # Clip centerlines to avoid the filled zones
+                    clipped_centerlines = self._clip_centerlines_avoiding_filled_zones(
+                        trace_centerlines, geometry, filled_zone, offset_centerlines
+                    )
+                    offset_msg = " with end offsets" if offset_centerlines else ""
+                    print(f"  Adding {len(clipped_centerlines)} trace centerlines{offset_msg} avoiding filled zones (from {len(trace_centerlines)} original)")
                     paths.extend(clipped_centerlines)
+                else:
+                    # If no filled zone, use the original geometry clipping
+                    interior_zone = geometry.buffer(-self.line_spacing * 0.5)
+                    if not interior_zone.is_empty:
+                        clipped_centerlines = self._clip_centerlines_to_geometry(trace_centerlines, interior_zone)
+                        print(f"  Adding {len(clipped_centerlines)} trace centerlines (from {len(trace_centerlines)} original)")
+                        paths.extend(clipped_centerlines)
 
         return paths
 

@@ -17,6 +17,7 @@ class GCodeGenerator:
         y_offset: float = 0.0,
         z_height: float = 20.0,
         normalize_origin: bool = True,
+        flip_horizontal: bool = False,
         bed_mesh_calibrate: bool = False,
         mesh_offset: float = 3.0,
         probe_count: tuple = (3, 3),
@@ -25,6 +26,7 @@ class GCodeGenerator:
         draw_outline: bool = False,
         outline_offset_count: int = 0,
         outline_offset_spacing: float = 0.1,
+        pin_transform: Optional[dict] = None,
     ):
         """Initialize the G-code generator.
 
@@ -37,6 +39,7 @@ class GCodeGenerator:
             y_offset: Additional Y offset in mm (after normalization), default 0
             z_height: Z height for laser focus in mm, default 20
             normalize_origin: If True, shift coordinates so min becomes (0,0), default True
+            flip_horizontal: If True, flip board horizontally (mirror X axis), typically used for bottom layer, default False
             bed_mesh_calibrate: If True, run bed mesh calibration before exposure, default False
             mesh_offset: Offset from board edges for mesh calibration in mm, default 3
             probe_count: Number of probe points (x, y) for mesh calibration, default (3, 3)
@@ -45,6 +48,7 @@ class GCodeGenerator:
             draw_outline: If True, draw board outline before exposure (for positioning), default False
             outline_offset_count: Number of offset copies: 0=single outline, -1=one outward copy, +1=one inward copy, etc.
             outline_offset_spacing: Spacing between offset copies in mm, default 0.1
+            pin_transform: Optional pin alignment transformation dict with keys: rotate_180, translate_x, translate_y, origin_x, origin_y
         """
         self.laser_power = laser_power
         self.feed_rate = feed_rate
@@ -54,6 +58,7 @@ class GCodeGenerator:
         self.y_offset = y_offset
         self.z_height = z_height
         self.normalize_origin = normalize_origin
+        self.flip_horizontal = flip_horizontal
         self.bed_mesh_calibrate = bed_mesh_calibrate
         self.mesh_offset = mesh_offset
         self.probe_count = probe_count
@@ -62,6 +67,7 @@ class GCodeGenerator:
         self.draw_outline = draw_outline
         self.outline_offset_count = outline_offset_count
         self.outline_offset_spacing = outline_offset_spacing
+        self.pin_transform = pin_transform
 
         # Calculate S parameter for M3 command (0-255 scale)
         self.laser_s_value = int((laser_power / 100.0) * laser_max_power)
@@ -96,21 +102,61 @@ class GCodeGenerator:
         else:
             norm_min_x, norm_min_y, norm_max_x, norm_max_y = min_x, min_y, max_x, max_y
 
+        # Calculate flip center (use board outline center for consistent flipping)
+        if self.flip_horizontal:
+            if board_outline_bounds:
+                self.flip_center_x = (board_outline_bounds[0] + board_outline_bounds[2]) / 2
+            else:
+                self.flip_center_x = (min_x + max_x) / 2
+        else:
+            self.flip_center_x = 0  # Not used
+
         # Calculate transformation offsets
-        if self.normalize_origin:
+        # Pin alignment takes precedence over normal normalization
+        if self.pin_transform:
+            # Pin alignment mode - apply rotation and translation
+            self.transform_x = self.pin_transform['translate_x'] + self.x_offset
+            self.transform_y = self.pin_transform['translate_y'] + self.y_offset
+            self.rotate_180 = self.pin_transform['rotate_180']
+
+            # Calculate center point for 180° rotation (around the pin origin)
+            self.rotation_center_x = self.pin_transform['origin_x']
+            self.rotation_center_y = self.pin_transform['origin_y']
+        elif self.normalize_origin:
             self.transform_x = -norm_min_x + self.x_offset
             self.transform_y = -norm_min_y + self.y_offset
+            self.rotate_180 = False
         else:
             self.transform_x = self.x_offset
             self.transform_y = self.y_offset
+            self.rotate_180 = False
 
         # Calculate transformed bounds for header
-        transformed_bounds = (
-            min_x + self.transform_x,
-            min_y + self.transform_y,
-            max_x + self.transform_x,
-            max_y + self.transform_y
-        )
+        # Apply flip first if enabled
+        if self.flip_horizontal:
+            # Flip swaps min_x and max_x
+            flipped_min_x = 2 * self.flip_center_x - max_x
+            flipped_max_x = 2 * self.flip_center_x - min_x
+            min_x, max_x = flipped_min_x, flipped_max_x
+
+        if self.rotate_180:
+            # After 180° rotation around center, bounds swap and invert relative to center
+            cx, cy = self.rotation_center_x, self.rotation_center_y
+            # Transform: rotate 180° around center, then translate
+            # Point (x, y) -> (2*cx - x, 2*cy - y) -> (2*cx - x + tx, 2*cy - y + ty)
+            transformed_bounds = (
+                2*cx - max_x + self.transform_x,
+                2*cy - max_y + self.transform_y,
+                2*cx - min_x + self.transform_x,
+                2*cy - min_y + self.transform_y
+            )
+        else:
+            transformed_bounds = (
+                min_x + self.transform_x,
+                min_y + self.transform_y,
+                max_x + self.transform_x,
+                max_y + self.transform_y
+            )
 
         # Store board outline bounds for bed mesh calculation
         self.board_outline_bounds = board_outline_bounds
@@ -172,14 +218,31 @@ class GCodeGenerator:
             t_min_x, t_min_y, t_max_x, t_max_y = transformed_bounds
             f.write(";\n")
             f.write(f"; Coordinate transformation:\n")
-            f.write(f";   Normalize origin: {self.normalize_origin}\n")
-            if board_outline_bounds:
-                f.write(f";   Reference: Board outline\n")
+
+            if self.pin_transform:
+                f.write(f";   Mode: PIN ALIGNMENT\n")
+                f.write(f";   Pin 1 origin: ({self.rotation_center_x:.2f}, {self.rotation_center_y:.2f}) mm\n")
+                if self.flip_horizontal:
+                    f.write(f";   Flip: Horizontal (mirrored for bottom layer)\n")
+                if self.rotate_180:
+                    f.write(f";   Rotation: 180° (board upside down)\n")
+                else:
+                    f.write(f";   Rotation: None (board normal orientation)\n")
+                f.write(f";   X offset: {self.x_offset:.2f} mm (additional)\n")
+                f.write(f";   Y offset: {self.y_offset:.2f} mm (additional)\n")
+                f.write(f";   Applied transform: X{self.transform_x:+.2f}, Y{self.transform_y:+.2f}\n")
             else:
-                f.write(f";   Reference: Copper bounds\n")
-            f.write(f";   X offset: {self.x_offset:.2f} mm\n")
-            f.write(f";   Y offset: {self.y_offset:.2f} mm\n")
-            f.write(f";   Applied transform: X{self.transform_x:+.2f}, Y{self.transform_y:+.2f}\n")
+                f.write(f";   Normalize origin: {self.normalize_origin}\n")
+                if board_outline_bounds:
+                    f.write(f";   Reference: Board outline\n")
+                else:
+                    f.write(f";   Reference: Copper bounds\n")
+                if self.flip_horizontal:
+                    f.write(f";   Flip: Horizontal (mirrored for bottom layer)\n")
+                f.write(f";   X offset: {self.x_offset:.2f} mm\n")
+                f.write(f";   Y offset: {self.y_offset:.2f} mm\n")
+                f.write(f";   Applied transform: X{self.transform_x:+.2f}, Y{self.transform_y:+.2f}\n")
+
             f.write(f"; Output copper bounds: ({t_min_x:.2f}, {t_min_y:.2f}) to ({t_max_x:.2f}, {t_max_y:.2f}) mm\n")
 
         f.write(";\n")
@@ -197,20 +260,63 @@ class GCodeGenerator:
 
         # TODO: Custom start G-code will be inserted here
 
-        # Standard initialization
+        # Check if using macro-based pin alignment
+        use_macro = self.pin_transform and self.pin_transform.get('use_macro', False)
+
+        # Initialization
         f.write("; Initialization\n")
-        f.write("G28         ; Home all axes\n")
         f.write("G21         ; Set units to millimeters\n")
         f.write("G90         ; Absolute positioning\n")
         f.write("M83         ; Relative extruder mode\n")
         f.write("M5          ; Ensure laser is off\n")
+        f.write("\n")
 
-        # Bed mesh calibration (optional)
-        if self.bed_mesh_calibrate and board_outline_bounds:
-            self._write_bed_mesh_calibration(f, board_outline_bounds)
+        if use_macro:
+            # Macro-based pin alignment using SETUP_PCB_SPACE
+            f.write("; PCB coordinate system setup with macro\n")
 
-        f.write(f"G0 F{self.travel_rate}  ; Set travel speed\n")
-        f.write(f"G0 Z{self.z_height}  ; Move to focus height\n")
+            # Calculate board bounds relative to pin origin
+            pin_x = self.pin_transform['origin_x']
+            pin_y = self.pin_transform['origin_y']
+
+            # Board outline bounds relative to pin
+            if board_outline_bounds:
+                b_min_x, b_min_y, b_max_x, b_max_y = board_outline_bounds
+                bottom_left_x = b_min_x - pin_x
+                bottom_left_y = b_min_y - pin_y
+                top_right_x = b_max_x - pin_x
+                top_right_y = b_max_y - pin_y
+
+                f.write(f"; Board bounds relative to pin: BL=({bottom_left_x:.2f},{bottom_left_y:.2f}) TR=({top_right_x:.2f},{top_right_y:.2f})\n")
+
+                # Call SETUP_PCB_SPACE macro
+                f.write(f"SETUP_PCB_SPACE BOTTOM_LEFT_X={bottom_left_x:.2f} BOTTOM_LEFT_Y={bottom_left_y:.2f} ")
+                f.write(f"TOP_RIGHT_X={top_right_x:.2f} TOP_RIGHT_Y={top_right_y:.2f} ")
+                f.write(f"WORK_Z={self.z_height} ")
+                if self.bed_mesh_calibrate:
+                    f.write(f"MESH_OFFSET={self.mesh_offset} ")
+                    f.write(f"PROBE_COUNT_X={self.probe_count[0]} PROBE_COUNT_Y={self.probe_count[1]}")
+                f.write("\n")
+            else:
+                # No board outline, just basic setup
+                f.write("; Warning: No board outline available, using defaults\n")
+                f.write(f"SETUP_PCB_SPACE WORK_Z={self.z_height}\n")
+
+            f.write("\n")
+            f.write(f"G0 F{self.travel_rate}  ; Set travel speed\n")
+            f.write("; PCB space ready - origin at pin center\n")
+        else:
+            # Standard homing
+            f.write("G28         ; Home all axes\n")
+
+            # Bed mesh calibration (optional)
+            if self.bed_mesh_calibrate and board_outline_bounds:
+                self._write_bed_mesh_calibration(f, board_outline_bounds, use_macro=False)
+
+            f.write(f"G0 F{self.travel_rate}  ; Set travel speed\n")
+            f.write(f"G0 Z{self.z_height}  ; Move to focus height\n")
+
+        f.write("\n")
 
         # Arm laser (optional)
         if self.laser_arm_command:
@@ -257,10 +363,23 @@ class GCodeGenerator:
             # Comment with path info
             f.write(f"; Path {i+1}/{total_paths} (length: {path.length:.2f}mm)\n")
 
-            # Apply coordinate transformation
+            # Apply coordinate transformation (flip, rotate, translate)
             start_x, start_y = coords[0]
-            start_x_transformed = start_x + self.transform_x
-            start_y_transformed = start_y + self.transform_y
+
+            # Step 1: Flip horizontal if enabled (mirror X around center)
+            if self.flip_horizontal:
+                start_x = 2 * self.flip_center_x - start_x
+
+            # Step 2: Rotate 180° if enabled (pin alignment)
+            if self.rotate_180:
+                # Rotate 180° around center point, then translate
+                cx, cy = self.rotation_center_x, self.rotation_center_y
+                start_x_transformed = 2*cx - start_x + self.transform_x
+                start_y_transformed = 2*cy - start_y + self.transform_y
+            else:
+                # Step 3: Just translate
+                start_x_transformed = start_x + self.transform_x
+                start_y_transformed = start_y + self.transform_y
 
             # Add travel time if not first path
             if prev_end_pos is not None:
@@ -282,8 +401,19 @@ class GCodeGenerator:
 
             # Trace the path with transformed coordinates
             for x, y in coords[1:]:
-                x_transformed = x + self.transform_x
-                y_transformed = y + self.transform_y
+                # Step 1: Flip horizontal if enabled (mirror X around center)
+                if self.flip_horizontal:
+                    x = 2 * self.flip_center_x - x
+
+                # Step 2: Rotate 180° if enabled (pin alignment)
+                if self.rotate_180:
+                    cx, cy = self.rotation_center_x, self.rotation_center_y
+                    x_transformed = 2*cx - x + self.transform_x
+                    y_transformed = 2*cy - y + self.transform_y
+                else:
+                    # Step 3: Just translate
+                    x_transformed = x + self.transform_x
+                    y_transformed = y + self.transform_y
                 f.write(f"G1 X{x_transformed:.4f} Y{y_transformed:.4f}\n")
 
             # Turn laser off
@@ -293,41 +423,75 @@ class GCodeGenerator:
             # Store end position for next travel calculation
             prev_end_pos = coords[-1]
 
-    def _write_bed_mesh_calibration(self, f: TextIO, board_outline_bounds: tuple):
+    def _write_bed_mesh_calibration(self, f: TextIO, board_outline_bounds: tuple, use_macro: bool = False,
+                                    probe_to_nozzle: str = None, nozzle_to_probe: str = None):
         """Write bed mesh calibration command.
 
         Args:
             f: File handle
             board_outline_bounds: Board outline bounds in original coordinates
+            use_macro: If True, use macro-based coordinate system (relative to pin)
+            probe_to_nozzle: Macro to move probe to nozzle position
+            nozzle_to_probe: Macro to move nozzle to probe position
         """
         # Calculate board dimensions
         b_min_x, b_min_y, b_max_x, b_max_y = board_outline_bounds
         board_width = b_max_x - b_min_x
         board_height = b_max_y - b_min_y
 
-        # Calculate board position (respecting normalization and offsets)
-        if self.normalize_origin:
-            board_x = self.x_offset
-            board_y = self.y_offset
+        if use_macro:
+            # Macro mode: coordinates are relative to pin (origin set by G92)
+            # Pin is at pin_transform origin, board outline is relative to that
+            pin_x = self.pin_transform['origin_x']
+            pin_y = self.pin_transform['origin_y']
+
+            # Board bounds in pin-relative coordinates
+            board_rel_min_x = b_min_x - pin_x
+            board_rel_min_y = b_min_y - pin_y
+            board_rel_max_x = b_max_x - pin_x
+            board_rel_max_y = b_max_y - pin_y
+
+            # Mesh bounds with offset
+            mesh_min_x = board_rel_min_x + self.mesh_offset
+            mesh_min_y = board_rel_min_y + self.mesh_offset
+            mesh_max_x = board_rel_max_x - self.mesh_offset
+            mesh_max_y = board_rel_max_y - self.mesh_offset
+
+            # Validate mesh bounds
+            if mesh_max_x <= mesh_min_x or mesh_max_y <= mesh_min_y:
+                f.write("; WARNING: Mesh offset too large for board size, skipping bed mesh calibration\n")
+                return
+
+            f.write("; Bed mesh calibration (relative to pin origin)\n")
+            f.write(f"{probe_to_nozzle}  ; Shift to probe for meshing\n")
+            f.write(f"BED_MESH_CALIBRATE MESH_MIN={mesh_min_x:.2f},{mesh_min_y:.2f} MESH_MAX={mesh_max_x:.2f},{mesh_max_y:.2f} PROBE_COUNT={self.probe_count[0]},{self.probe_count[1]}\n")
+            f.write(f"{nozzle_to_probe}  ; Shift back to nozzle\n")
+            f.write("\n")
         else:
-            board_x = b_min_x + self.x_offset
-            board_y = b_min_y + self.y_offset
+            # Standard mode: absolute coordinates
+            # Calculate board position (respecting normalization and offsets)
+            if self.normalize_origin:
+                board_x = self.x_offset
+                board_y = self.y_offset
+            else:
+                board_x = b_min_x + self.x_offset
+                board_y = b_min_y + self.y_offset
 
-        # Calculate mesh bounds with offset from edges (relative to board position)
-        mesh_min_x = board_x + self.mesh_offset
-        mesh_min_y = board_y + self.mesh_offset
-        mesh_max_x = board_x + board_width - self.mesh_offset
-        mesh_max_y = board_y + board_height - self.mesh_offset
+            # Calculate mesh bounds with offset from edges (relative to board position)
+            mesh_min_x = board_x + self.mesh_offset
+            mesh_min_y = board_y + self.mesh_offset
+            mesh_max_x = board_x + board_width - self.mesh_offset
+            mesh_max_y = board_y + board_height - self.mesh_offset
 
-        # Validate mesh bounds
-        if mesh_max_x <= mesh_min_x or mesh_max_y <= mesh_min_y:
-            f.write("; WARNING: Mesh offset too large for board size, skipping bed mesh calibration\n")
-            return
+            # Validate mesh bounds
+            if mesh_max_x <= mesh_min_x or mesh_max_y <= mesh_min_y:
+                f.write("; WARNING: Mesh offset too large for board size, skipping bed mesh calibration\n")
+                return
 
-        f.write("\n")
-        f.write("; Bed mesh calibration\n")
-        f.write(f"BED_MESH_CALIBRATE MESH_MIN={mesh_min_x:.2f},{mesh_min_y:.2f} MESH_MAX={mesh_max_x:.2f},{mesh_max_y:.2f} PROBE_COUNT={self.probe_count[0]},{self.probe_count[1]}\n")
-        f.write("\n")
+            f.write("\n")
+            f.write("; Bed mesh calibration\n")
+            f.write(f"BED_MESH_CALIBRATE MESH_MIN={mesh_min_x:.2f},{mesh_min_y:.2f} MESH_MAX={mesh_max_x:.2f},{mesh_max_y:.2f} PROBE_COUNT={self.probe_count[0]},{self.probe_count[1]}\n")
+            f.write("\n")
 
     def _write_outline(self, f: TextIO, board_outline_bounds: tuple):
         """Write board outline drawing for positioning verification.
@@ -338,20 +502,6 @@ class GCodeGenerator:
         """
         # Calculate board dimensions
         b_min_x, b_min_y, b_max_x, b_max_y = board_outline_bounds
-        board_width = b_max_x - b_min_x
-        board_height = b_max_y - b_min_y
-
-        # Calculate transformed corner positions (respecting normalization and offsets)
-        # If normalized, board starts at offset, otherwise at original position + offset
-        if self.normalize_origin:
-            base_x1 = self.x_offset
-            base_y1 = self.y_offset
-        else:
-            base_x1 = b_min_x + self.x_offset
-            base_y1 = b_min_y + self.y_offset
-
-        base_x2 = base_x1 + board_width
-        base_y2 = base_y1 + board_height
 
         f.write("\n")
         if self.outline_offset_count == 0:
@@ -373,11 +523,39 @@ class GCodeGenerator:
             else:
                 offset_amount = i * self.outline_offset_spacing * offset_direction
 
-            # Apply offset (negative = expand, positive = shrink)
-            corner_x1 = base_x1 - offset_amount
-            corner_y1 = base_y1 - offset_amount
-            corner_x2 = base_x2 + offset_amount
-            corner_y2 = base_y2 + offset_amount
+            # Start with ORIGINAL outline coordinates and apply offset
+            orig_x1 = b_min_x - offset_amount
+            orig_y1 = b_min_y - offset_amount
+            orig_x2 = b_max_x + offset_amount
+            orig_y2 = b_max_y + offset_amount
+
+            # Apply the SAME transformation we use for paths (flip, rotate, translate)
+            # This ensures outline matches the actual board position
+
+            # Step 1: Flip if enabled
+            if self.flip_horizontal:
+                orig_x1_flipped = 2 * self.flip_center_x - orig_x1
+                orig_x2_flipped = 2 * self.flip_center_x - orig_x2
+                # After flip, x1 and x2 swap
+                orig_x1, orig_x2 = orig_x2_flipped, orig_x1_flipped
+
+            # Step 2: Rotate if enabled
+            if self.rotate_180:
+                # Rotate 180° around center point, then translate
+                cx, cy = self.rotation_center_x, self.rotation_center_y
+                corner_x1 = 2*cx - orig_x1 + self.transform_x
+                corner_y1 = 2*cy - orig_y1 + self.transform_y
+                corner_x2 = 2*cx - orig_x2 + self.transform_x
+                corner_y2 = 2*cy - orig_y2 + self.transform_y
+                # After rotation, corners swap positions
+                corner_x1, corner_x2 = corner_x2, corner_x1
+                corner_y1, corner_y2 = corner_y2, corner_y1
+            else:
+                # Step 3: Just apply translation
+                corner_x1 = orig_x1 + self.transform_x
+                corner_y1 = orig_y1 + self.transform_y
+                corner_x2 = orig_x2 + self.transform_x
+                corner_y2 = orig_y2 + self.transform_y
 
             # Draw rectangle: start at corner 1, go clockwise
             if i == 0:

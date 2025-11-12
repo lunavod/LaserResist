@@ -1,18 +1,27 @@
 {
+  "side": "front",
   "line_spacing": 0.1,
   "initial_offset": 0.05,
   "forced_pad_centerlines": false,
   "offset_centerlines": false,
+  "force_trace_centerlines": false,
   "laser_power": 6.0,
   "feed_rate": 1400.0,
   "travel_rate": 6000.0,
   "z_height": 20.0,
   "x_offset": 0.0,
   "y_offset": 0.0,
+  "flip_horizontal": false,
   "bed_mesh": true,
   "mesh_offset": 3.0,
   "probe_count": "3,3",
   "laser_arm_command": "ARM_LASER",
   "laser_disarm_command": "DISARM_LASER",
-  "draw_outline": false
+  "draw_outline": false,
+  "outline_offset_count": 0,
+  "generate_template_stl": false,
+  "template_block_height": 4.0,
+  "template_wall_thickness": 2.0,
+  "hole_print_tolerance": 0.2,
+  "pcb_safety_offset": 0.0
 }

@@ -16,13 +16,16 @@ except ImportError:
 from .gerber_parser import GerberParser
 from .fill_generator import FillGenerator
 from .gcode_generator import GCodeGenerator
+from .pin_alignment import PinAlignmentUI, get_pin_alignment_transform
+from .template_generator import TemplateGenerator
 
 
-def find_gerber_files(folder: Path) -> Dict[str, Optional[Path]]:
+def find_gerber_files(folder: Path, side: str = 'front') -> Dict[str, Optional[Path]]:
     """Auto-detect Gerber files in a folder.
 
     Args:
         folder: Path to folder containing Gerber files
+        side: Which copper layer to use ('front', 'back', 'top', 'bottom')
 
     Returns:
         Dictionary with keys: copper, outline, drill_pth, drill_via
@@ -32,13 +35,28 @@ def find_gerber_files(folder: Path) -> Dict[str, Optional[Path]]:
         'outline': None,
         'drill_pth': None,
         'drill_via': None,
+        'drill_npth': None,
     }
 
+    # Normalize side parameter
+    side = side.lower()
+    if side in ['front', 'top']:
+        side = 'front'
+    elif side in ['back', 'bottom']:
+        side = 'back'
+    else:
+        raise ValueError(f"Invalid side '{side}'. Must be 'front', 'back', 'top', or 'bottom'")
+
     # Common patterns for each file type
-    copper_patterns = ['*.gtl', '*.top', '*-F.Cu.gbr', '*F_Cu.gbr', '*.GTL']
+    if side == 'front':
+        copper_patterns = ['*.gtl', '*.top', '*-F.Cu.gbr', '*F_Cu.gbr', '*.GTL']
+    else:  # back
+        copper_patterns = ['*.gbl', '*.bottom', '*-B.Cu.gbr', '*B_Cu.gbr', '*.GBL']
+
     outline_patterns = ['*.gko', '*.gm1', '*-Edge.Cuts.gbr', '*Edge_Cuts.gbr', '*BoardOutline*.gbr', '*.GKO', '*BoardOutline*.GKO']
     drill_pth_patterns = ['*PTH*.drl', '*PTH*.DRL', '*PTH*.txt', '*-PTH*.drl', '*plated*.drl', '*Plated*.drl']
     drill_via_patterns = ['*Via*.drl', '*VIA*.drl', '*via*.drl', '*Via*.DRL', '*VIA*.DRL']
+    drill_npth_patterns = ['*NPTH*.drl', '*NPTH*.DRL', '*npth*.drl', '*-NPTH*.drl']
 
     # Search for copper layer
     for pattern in copper_patterns:
@@ -69,6 +87,12 @@ def find_gerber_files(folder: Path) -> Dict[str, Optional[Path]]:
             files['drill_via'] = matches[0]
             break
 
+    for pattern in drill_npth_patterns:
+        matches = list(folder.glob(pattern))
+        if matches:
+            files['drill_npth'] = matches[0]
+            break
+
     return files
 
 
@@ -89,15 +113,47 @@ def load_config(config_path: Path) -> Dict[str, Any]:
 
     with open(config_path, 'r') as f:
         if suffix == '.json':
-            return json.load(f)
+            config = json.load(f)
         elif suffix in ['.yaml', '.yml']:
             if not YAML_AVAILABLE:
                 print("Error: PyYAML not installed. Install with: pip install pyyaml")
                 sys.exit(1)
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
         else:
             print(f"Error: Unsupported config file format '{suffix}'. Use .json or .yaml")
             sys.exit(1)
+
+    # Validate config keys
+    known_keys = {
+        # Fill generation
+        'line_spacing', 'initial_offset', 'forced_pad_centerlines', 'offset_centerlines', 'force_trace_centerlines',
+        # Laser settings
+        'laser_power', 'feed_rate', 'travel_rate', 'z_height',
+        # Coordinate transformation
+        'x_offset', 'y_offset', 'no_normalize', 'flip_horizontal',
+        # Bed mesh
+        'bed_mesh', 'mesh_offset', 'probe_count',
+        # Laser control
+        'laser_arm_command', 'laser_disarm_command',
+        # Outline
+        'draw_outline', 'outline_offset_count',
+        # Pin mode
+        'pin_mode', 'pin_macro',
+        # Template generation
+        'generate_template_stl', 'stl_name', 'template_block_height',
+        'template_wall_thickness', 'hole_print_tolerance', 'pcb_safety_offset',
+        # Gerber file selection
+        'side',
+    }
+
+    unknown_keys = set(config.keys()) - known_keys
+    if unknown_keys:
+        print(f"\nWarning: Unknown configuration keys in {config_path.name}:")
+        for key in sorted(unknown_keys):
+            print(f"  - {key}")
+        print("These keys will be ignored. Check for typos or see config_example.yaml for valid keys.\n")
+
+    return config
 
 
 def main():
@@ -146,6 +202,12 @@ Examples:
     # Gerber file options
     gerber_group = parser.add_argument_group('Gerber files')
     gerber_group.add_argument(
+        "--side",
+        type=str,
+        choices=['front', 'back', 'top', 'bottom'],
+        help="PCB side/layer for folder auto-detection: front/top (default) or back/bottom",
+    )
+    gerber_group.add_argument(
         "--outline",
         type=Path,
         help="Board outline Gerber file (.gko, .gm1, etc.)",
@@ -159,6 +221,11 @@ Examples:
         "--drill-via",
         type=Path,
         help="Via drill file (.drl)",
+    )
+    gerber_group.add_argument(
+        "--drill-npth",
+        type=Path,
+        help="NPTH (non-plated through hole) drill file (.drl)",
     )
 
     # Fill generation options
@@ -182,6 +249,11 @@ Examples:
         "--offset-centerlines",
         action="store_true",
         help="Offset trace centerlines from ends (default: False)",
+    )
+    fill_group.add_argument(
+        "--force-trace-centerlines",
+        action="store_true",
+        help="Force all trace centerlines without clipping to avoid filled zones (default: False)",
     )
 
     # G-code generation options
@@ -220,6 +292,11 @@ Examples:
         "--no-normalize",
         action="store_true",
         help="Don't normalize coordinates to origin (default: normalize)",
+    )
+    gcode_group.add_argument(
+        "--flip-horizontal",
+        action="store_true",
+        help="Flip board horizontally (mirror X axis) - typically used for bottom layer",
     )
 
     # Bed mesh calibration
@@ -263,6 +340,52 @@ Examples:
         help="Number of offset outline copies: 0=single, -1=one outward, +1=one inward, etc. (default: 0)",
     )
 
+    # Pin alignment mode
+    pin_group = parser.add_argument_group('Pin alignment')
+    pin_group.add_argument(
+        "--pin-mode",
+        action="store_true",
+        help="Enable interactive pin alignment mode for physical alignment pins",
+    )
+    pin_group.add_argument(
+        "--pin-macro",
+        action="store_true",
+        help="Use SETUP_PCB_SPACE macro for alignment (requires macro installed on printer)",
+    )
+
+    # Template generation
+    template_group = parser.add_argument_group('Drilling template')
+    template_group.add_argument(
+        "--generate-template-stl",
+        action="store_true",
+        help="Generate drilling template STL file using OpenSCAD",
+    )
+    template_group.add_argument(
+        "--stl-name",
+        type=Path,
+        help="Output STL filename (default: same as gcode with .stl extension)",
+    )
+    template_group.add_argument(
+        "--template-block-height",
+        type=float,
+        help="Height of template block in mm (default: 4.0)",
+    )
+    template_group.add_argument(
+        "--template-wall-thickness",
+        type=float,
+        help="Thickness of template walls in mm (default: 2.0)",
+    )
+    template_group.add_argument(
+        "--hole-print-tolerance",
+        type=float,
+        help="Extra diameter added to holes for 3D print compensation in mm (default: 0.2)",
+    )
+    template_group.add_argument(
+        "--pcb-safety-offset",
+        type=float,
+        help="Extra margin around board in mm to make template bigger (default: 0)",
+    )
+
     args = parser.parse_args()
 
     # Suppress warnings by default unless verbose is enabled
@@ -298,30 +421,37 @@ Examples:
 
     # Determine Gerber files
     if input_path.is_dir():
-        print(f"Auto-detecting Gerber files in: {input_path}")
-        detected = find_gerber_files(input_path)
+        side = get_value('side', default='front')
+        side_display = side.capitalize()
+        print(f"Auto-detecting Gerber files in: {input_path} (side: {side_display})")
+        detected = find_gerber_files(input_path, side=side)
 
         copper_file = detected['copper']
         outline_file = get_value('outline') or detected['outline']
         drill_pth_file = get_value('drill_pth') or detected['drill_pth']
         drill_via_file = get_value('drill_via') or detected['drill_via']
+        drill_npth_file = get_value('drill_npth') or detected['drill_npth']
 
         if not copper_file:
-            print("Error: Could not find copper layer file (.gtl, .top, etc.)")
+            layer_type = "top" if side in ['front', 'top'] else "bottom"
+            print(f"Error: Could not find {side} copper layer file (.gtl/.gbl, .{layer_type}, etc.)")
             return 1
 
-        print(f"  Copper: {copper_file.name}")
+        print(f"  Copper ({side_display}): {copper_file.name}")
         if outline_file:
             print(f"  Outline: {outline_file.name}")
         if drill_pth_file:
             print(f"  Drill PTH: {drill_pth_file.name}")
         if drill_via_file:
             print(f"  Drill Via: {drill_via_file.name}")
+        if drill_npth_file:
+            print(f"  Drill NPTH: {drill_npth_file.name}")
     else:
         copper_file = input_path
         outline_file = get_value('outline')
         drill_pth_file = get_value('drill_pth')
         drill_via_file = get_value('drill_via')
+        drill_npth_file = get_value('drill_npth')
 
         print(f"Copper file: {copper_file}")
 
@@ -334,6 +464,7 @@ Examples:
     initial_offset = get_value('initial_offset', default=0.05)
     forced_pad_centerlines = get_value('forced_pad_centerlines', default=False)
     offset_centerlines = get_value('offset_centerlines', default=False)
+    force_trace_centerlines = get_value('force_trace_centerlines', default=False)
 
     laser_power = get_value('laser_power', default=2.0)
     feed_rate = get_value('feed_rate', default=1400.0)
@@ -353,6 +484,20 @@ Examples:
     draw_outline = get_value('draw_outline', default=False)
     outline_offset_count = get_value('outline_offset_count', default=0)
 
+    pin_mode = get_value('pin_mode', default=False)
+    pin_macro = get_value('pin_macro', default=False)
+    flip_horizontal = get_value('flip_horizontal', default=False)
+
+    # Validate macro configuration
+    if pin_macro and not pin_mode:
+        print("Warning: --pin-macro specified but --pin-mode not enabled. Ignoring macro.")
+        pin_macro = False
+
+    # Disable negative outline offsets in pin mode (they don't make sense with precise alignment)
+    if pin_mode and outline_offset_count < 0:
+        print("\nWarning: Negative outline offsets disabled in pin mode (incompatible with precise alignment)")
+        outline_offset_count = 0
+
     # Print settings summary
     print(f"\nSettings:")
     print(f"  Line spacing: {line_spacing} mm")
@@ -365,7 +510,7 @@ Examples:
 
     # Parse Gerber files
     print(f"\nParsing Gerber files...")
-    parser_obj = GerberParser(copper_file, drill_pth_file, drill_via_file)
+    parser_obj = GerberParser(copper_file, drill_pth_file, drill_via_file, drill_npth_file)
     geometry = parser_obj.parse()
     bounds = parser_obj.get_bounds()
     trace_centerlines = parser_obj.get_trace_centerlines()
@@ -376,11 +521,97 @@ Examples:
         board_outline_bounds = GerberParser.parse_board_outline(outline_file)
         print(f"  Board outline: {board_outline_bounds[2]-board_outline_bounds[0]:.2f} x {board_outline_bounds[3]-board_outline_bounds[1]:.2f} mm")
 
+    # Handle pin alignment mode
+    pin_transform = None
+    if pin_mode:
+        print("\n" + "="*60)
+        print("PIN ALIGNMENT MODE")
+        print("="*60)
+
+        # Get drill holes
+        pth_holes = parser_obj.get_drill_holes_pth()
+        npth_holes = parser_obj.get_drill_holes_npth()
+
+        if not pth_holes and not npth_holes:
+            print("Error: No drill holes found for pin alignment.")
+            print("Pin alignment requires PTH or NPTH drill files.")
+            return 1
+
+        print(f"Found {len(pth_holes)} PTH holes and {len(npth_holes)} NPTH holes")
+
+        # Use board outline bounds if available (drill holes are positioned relative to board)
+        # Otherwise expand copper bounds to include all holes
+        if board_outline_bounds:
+            display_bounds = board_outline_bounds
+            print(f"Using board outline bounds for pin alignment display")
+        else:
+            # Expand bounds to include all drill holes for visualization
+            # This ensures holes outside copper area are visible (e.g., bottom layer NPTH holes)
+            min_x, min_y, max_x, max_y = bounds
+            all_holes = pth_holes + npth_holes
+            if all_holes:
+                hole_xs = [h['x'] for h in all_holes]
+                hole_ys = [h['y'] for h in all_holes]
+                min_x = min(min_x, min(hole_xs))
+                min_y = min(min_y, min(hole_ys))
+                max_x = max(max_x, max(hole_xs))
+                max_y = max(max_y, max(hole_ys))
+                display_bounds = (min_x, min_y, max_x, max_y)
+            else:
+                display_bounds = bounds
+            print(f"No board outline - using expanded copper bounds for pin alignment display")
+
+        # Show interactive UI (always need 2 pins for rotation detection)
+        ui = PinAlignmentUI()
+        selected = ui.show_board(geometry, display_bounds, pth_holes, npth_holes, trace_centerlines)
+
+        if selected is None:
+            print("\nPin alignment cancelled. Exiting.")
+            return 0
+
+        # Both modes need 2 pins for rotation detection
+        pin1, pin2 = selected
+        print(f"\n✓ Pin alignment configured:")
+        print(f"  Pin 1 (bottom): ({pin1['x']:.2f}, {pin1['y']:.2f}) Ø{pin1['diameter']:.2f}mm")
+        print(f"  Pin 2 (top):    ({pin2['x']:.2f}, {pin2['y']:.2f}) Ø{pin2['diameter']:.2f}mm")
+
+        # Calculate rotation based on pin positions
+        base_transform = get_pin_alignment_transform(pin1, pin2)
+
+        if pin_macro:
+            # Macro mode - printer handles physical positioning, we just need rotation info
+            print(f"  Mode: Printer macros for physical alignment")
+            print(f"  Macro: {pin_macro}")
+            if base_transform['rotate_180']:
+                print(f"  Board orientation: Upside down (180° rotation needed)")
+            else:
+                print(f"  Board orientation: Normal")
+
+            # Create transform with macro info
+            pin_transform = {
+                'origin_x': pin1['x'],
+                'origin_y': pin1['y'],
+                'translate_x': -pin1['x'],
+                'translate_y': -pin1['y'],
+                'rotate_180': base_transform['rotate_180'],  # Preserve rotation detection
+                'rotation_center_x': pin1['x'],
+                'rotation_center_y': pin1['y'],
+                'use_macro': True,
+            }
+        else:
+            # Standard mode - software-based transformation
+            pin_transform = base_transform
+            pin_transform['use_macro'] = False
+            if pin_transform['rotate_180']:
+                print(f"  Transformation: Rotate 180° + translate to origin at pin 1")
+            else:
+                print(f"  Transformation: Translate to origin at pin 1")
+
     # Generate fill
     print(f"\nGenerating fill paths...")
     pads = parser_obj.get_pads()
     drill_holes = parser_obj.get_drill_holes()
-    fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset, forced_pad_centerlines=forced_pad_centerlines)
+    fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset, forced_pad_centerlines=forced_pad_centerlines, force_trace_centerlines=force_trace_centerlines)
     paths = fill_gen.generate_fill(geometry, trace_centerlines=trace_centerlines, offset_centerlines=offset_centerlines, pads=pads, drill_holes=drill_holes)
 
     total_length = sum(path.length for path in paths)
@@ -397,6 +628,7 @@ Examples:
         x_offset=x_offset,
         y_offset=y_offset,
         normalize_origin=normalize_origin,
+        flip_horizontal=flip_horizontal,
         bed_mesh_calibrate=bed_mesh,
         mesh_offset=mesh_offset,
         probe_count=probe_count,
@@ -405,6 +637,7 @@ Examples:
         draw_outline=draw_outline,
         outline_offset_count=outline_offset_count,
         outline_offset_spacing=line_spacing,
+        pin_transform=pin_transform,
     )
 
     with open(output_file, 'w') as f:
@@ -425,6 +658,45 @@ Examples:
 
     print(f"\n✓ G-code saved to: {output_file}")
     print(f"  Estimated exposure time: {time_str}")
+
+    # Generate drilling template STL if requested
+    generate_template_stl = get_value('generate_template_stl', default=False)
+    if generate_template_stl:
+        # Template requires pin mode to be enabled
+        if not pin_mode or not pin_transform:
+            print("\nWarning: Drilling template requires --pin-mode")
+            print("The template needs two pin holes for alignment.")
+        else:
+            # Determine output STL filename
+            stl_name = get_value('stl_name')
+            if not stl_name:
+                # Use same base name as gcode file
+                stl_name = output_file.with_suffix('.stl')
+
+            # Get template parameters
+            block_height = get_value('template_block_height', default=4.0)
+            wall_thickness = get_value('template_wall_thickness', default=2.0)
+            hole_print_tolerance = get_value('hole_print_tolerance', default=0.2)
+            pcb_safety_offset = get_value('pcb_safety_offset', default=0.0)
+
+            # Use board outline bounds if available, otherwise copper bounds
+            template_bounds = board_outline_bounds if board_outline_bounds else bounds
+
+            # Create template generator with selected pins
+            template_gen = TemplateGenerator(
+                board_bounds=template_bounds,
+                pin1=pin1,
+                pin2=pin2,
+                block_height=block_height,
+                wall_thickness=wall_thickness,
+                hole_print_tolerance=hole_print_tolerance,
+                pcb_safety_offset=pcb_safety_offset,
+            )
+
+            # Generate STL
+            success = template_gen.generate_stl(stl_name)
+            if success:
+                print(f"✓ Drilling template STL saved to: {stl_name}")
 
     return 0
 

@@ -74,6 +74,11 @@ Complete board with all files:
 laserresist examples/ --outline board.gko --drill-pth holes.drl --drill-via vias.drl -o output.gcode
 ```
 
+Process back side of board (folder auto-detection with horizontal flip):
+```bash
+laserresist gerber_folder/ --side back --flip-horizontal -o back_exposure.gcode
+```
+
 Klipper with bed mesh:
 ```bash
 laserresist board.gtl --bed-mesh --mesh-offset 3.0 --probe-count "5,5" \
@@ -112,6 +117,7 @@ laserresist board.gtl --forced-pad-centerlines -o output.gcode
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `--side` | String | PCB side for folder auto-detection: `front`/`top` (default) or `back`/`bottom` |
 | `--outline` | Path | Board outline Gerber file (`.gko`, `.gm1`, etc.) |
 | `--drill-pth` | Path | PTH (Plated Through Hole) drill file (`.drl`) |
 | `--drill-via` | Path | Via drill file (`.drl`) |
@@ -141,6 +147,7 @@ laserresist board.gtl --forced-pad-centerlines -o output.gcode
 | `--x-offset` | Float | `0.0` | X offset (mm) |
 | `--y-offset` | Float | `0.0` | Y offset (mm) |
 | `--no-normalize` | Flag | `false` | Don't move pattern to origin |
+| `--flip-horizontal` | Flag | `false` | Flip board horizontally (mirror X axis) - typically used for bottom layer |
 
 ### Bed Mesh (Klipper)
 
@@ -171,6 +178,9 @@ Save settings in JSON or YAML files:
 # LaserResist Configuration File
 # All settings are optional - defaults will be used if not specified
 
+# Gerber file selection (for folder auto-detection)
+side: "front"              # PCB side: "front"/"top" (default) or "back"/"bottom"
+
 # Fill generation
 line_spacing: 0.1          # Spacing between fill lines in mm
 initial_offset: 0.05       # Initial inward offset of outer boundaries to compensate for laser dot size in mm
@@ -186,6 +196,7 @@ z_height: 20.0             # Z height for laser focus in mm
 # Coordinate transformation
 x_offset: 0.0              # X offset in mm
 y_offset: 0.0              # Y offset in mm
+flip_horizontal: false     # Flip board horizontally (mirror X axis) - use true for bottom layer
 
 # Bed mesh calibration (optional)
 bed_mesh: true             # Enable bed mesh calibration
@@ -205,6 +216,7 @@ outline_offset_count: 0              # Offset copies: 0=single, -1=one outward, 
 
 ```json
 {
+  "side": "front",
   "line_spacing": 0.1,
   "initial_offset": 0.05,
   "forced_pad_centerlines": false,
@@ -215,6 +227,7 @@ outline_offset_count: 0              # Offset copies: 0=single, -1=one outward, 
   "z_height": 20.0,
   "x_offset": 0.0,
   "y_offset": 0.0,
+  "flip_horizontal": false,
   "bed_mesh": true,
   "mesh_offset": 3.0,
   "probe_count": "3,3",
