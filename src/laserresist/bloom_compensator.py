@@ -194,12 +194,13 @@ def identify_underexposed_traces(simulator, trace_elements, threshold_percentile
     return normal_traces, underexposed_traces
 
 
-def generate_compensation_paths(underexposed_traces, fill_generator):
+def generate_compensation_paths(underexposed_traces, fill_generator, drill_holes=None):
     """Generate additional fill paths for under-exposed traces.
 
     Args:
         underexposed_traces: List of trace dicts that need compensation
         fill_generator: FillGenerator instance to use
+        drill_holes: Optional polygon of drill holes to subtract from compensation paths
 
     Returns:
         List of LineString paths for additional exposure
@@ -212,6 +213,16 @@ def generate_compensation_paths(underexposed_traces, fill_generator):
 
         # Reconstruct the trace geometry (buffered line)
         trace_geom = trace_line.buffer(trace_width / 2, cap_style='round', join_style='round')
+
+        # CRITICAL FIX: Subtract drill holes from trace geometry BEFORE generating fills
+        # The generate_fill() function doesn't subtract drill_holes from the main geometry,
+        # it only uses them for forced pad centerlines. So we must subtract them here.
+        if drill_holes and not drill_holes.is_empty:
+            trace_geom = trace_geom.difference(drill_holes)
+
+            # Skip if trace is entirely within a drill hole
+            if trace_geom.is_empty:
+                continue
 
         # Generate fills for ONLY this trace (no trace_centerlines, no pads)
         trace_fills = fill_generator.generate_fill(trace_geom, trace_centerlines=[], pads=[])

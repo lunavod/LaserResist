@@ -697,7 +697,8 @@ Examples:
             print(f"  Identified {len(underexposed_traces)} under-exposed traces")
             bloom_compensation_paths = generate_compensation_paths(
                 underexposed_traces,
-                fill_gen
+                fill_gen,
+                drill_holes=drill_holes
             )
             print(f"  Generated {len(bloom_compensation_paths)} compensation paths")
 

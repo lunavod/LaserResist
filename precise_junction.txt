@@ -1,3 +1,0 @@
-Precise Junction Coordinate
-X: 23.6700
-Y: -0.7752
