@@ -26,7 +26,7 @@ class GerberParser:
         self.drill_npth_path = drill_npth_path
         self.layer: GerberFile = None
         self.polygons: List[Polygon] = []
-        self.trace_centerlines: List[LineString] = []  # Store trace centerlines
+        self.trace_centerlines: List[dict] = []  # Store trace centerlines with width info: [{'line': LineString, 'width': float}, ...]
         self.pads: List[dict] = []  # Store pad geometry with aperture info
         self.drill_holes: Union[MultiPolygon, Polygon, None] = None  # Store drill hole geometry
         self.drill_holes_pth: List[dict] = []  # Store PTH holes separately (x, y, diameter)
@@ -87,9 +87,9 @@ class GerberParser:
                         if poly.is_valid and not poly.is_empty:
                             geometries.append(poly)
 
-                        # Also store the centerline for later use in fill generation
+                        # Also store the centerline with width info for later use in fill generation
                         if line.length > 0.01:  # Only meaningful lines
-                            self.trace_centerlines.append(line)
+                            self.trace_centerlines.append({'line': line, 'width': width})
                     else:
                         # For other primitives, convert to arc polygon
                         arc_poly = prim.to_arc_poly()
@@ -266,11 +266,11 @@ class GerberParser:
             print(f"Warning: Could not parse board outline: {e}")
             return (0, 0, 0, 0)
 
-    def get_trace_centerlines(self) -> List[LineString]:
-        """Get the centerlines of all trace lines.
+    def get_trace_centerlines(self) -> List[dict]:
+        """Get the centerlines of all trace lines with width information.
 
         Returns:
-            List of LineString centerlines from trace objects
+            List of dicts with 'line' (LineString) and 'width' (float) keys from trace objects
         """
         return self.trace_centerlines
 

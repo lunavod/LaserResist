@@ -18,6 +18,7 @@ from .fill_generator import FillGenerator
 from .gcode_generator import GCodeGenerator
 from .pin_alignment import PinAlignmentUI, get_pin_alignment_transform
 from .template_generator import TemplateGenerator
+from .bloom_compensator import FastBloomSimulator, identify_underexposed_traces, generate_compensation_paths, generate_debug_visualization
 
 
 def find_gerber_files(folder: Path, side: str = 'front') -> Dict[str, Optional[Path]]:
@@ -126,7 +127,7 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     # Validate config keys
     known_keys = {
         # Fill generation
-        'line_spacing', 'initial_offset', 'forced_pad_centerlines', 'offset_centerlines', 'force_trace_centerlines',
+        'line_spacing', 'initial_offset', 'forced_pad_centerlines', 'offset_centerlines', 'force_trace_centerlines', 'force_trace_centerlines_max_thickness', 'double_expose_isolated', 'isolation_threshold', 'bloom_compensation', 'bloom_resolution', 'bloom_spot_sigma', 'bloom_scatter_sigma', 'bloom_scatter_fraction', 'bloom_threshold_percentile', 'bloom_debug_image',
         # Laser settings
         'laser_power', 'feed_rate', 'travel_rate', 'z_height',
         # Coordinate transformation
@@ -254,6 +255,36 @@ Examples:
         "--force-trace-centerlines",
         action="store_true",
         help="Force all trace centerlines without clipping to avoid filled zones (default: False)",
+    )
+    fill_group.add_argument(
+        "--bloom-compensation",
+        action="store_true",
+        help="Enable bloom compensation for isolated traces (default: False)",
+    )
+    fill_group.add_argument(
+        "--bloom-resolution",
+        type=float,
+        help="Bloom simulation grid resolution in mm (default: 0.05)",
+    )
+    fill_group.add_argument(
+        "--bloom-scatter-sigma",
+        type=float,
+        help="Bloom scatter Gaussian sigma in mm (default: 2.0)",
+    )
+    fill_group.add_argument(
+        "--bloom-scatter-fraction",
+        type=float,
+        help="Fraction of energy in bloom scatter vs tight spot (default: 0.35)",
+    )
+    fill_group.add_argument(
+        "--bloom-threshold-percentile",
+        type=float,
+        help="Percentile threshold for under-exposure detection (default: 30)",
+    )
+    fill_group.add_argument(
+        "--bloom-debug-image",
+        action="store_true",
+        help="Generate bloom visualization image alongside G-code (default: False)",
     )
 
     # G-code generation options
@@ -465,6 +496,17 @@ Examples:
     forced_pad_centerlines = get_value('forced_pad_centerlines', default=False)
     offset_centerlines = get_value('offset_centerlines', default=False)
     force_trace_centerlines = get_value('force_trace_centerlines', default=False)
+    force_trace_centerlines_max_thickness = get_value('force_trace_centerlines_max_thickness', default=0.0)
+    double_expose_isolated = get_value('double_expose_isolated', default=False)
+    isolation_threshold = get_value('isolation_threshold', default=3.0)
+
+    bloom_compensation = get_value('bloom_compensation', default=False)
+    bloom_resolution = get_value('bloom_resolution', default=0.05)
+    bloom_spot_sigma = get_value('bloom_spot_sigma', default=0.05)
+    bloom_scatter_sigma = get_value('bloom_scatter_sigma', default=2.0)
+    bloom_scatter_fraction = get_value('bloom_scatter_fraction', default=0.35)
+    bloom_threshold_percentile = get_value('bloom_threshold_percentile', default=30)
+    bloom_debug_image = get_value('bloom_debug_image', default=False)
 
     laser_power = get_value('laser_power', default=2.0)
     feed_rate = get_value('feed_rate', default=1400.0)
@@ -507,6 +549,8 @@ Examples:
     print(f"  Z height: {z_height} mm")
     if bed_mesh:
         print(f"  Bed mesh: enabled (offset={mesh_offset}mm, probe={probe_count[0]}x{probe_count[1]})")
+    if bloom_compensation:
+        print(f"  Bloom compensation: enabled (scatter={bloom_scatter_sigma}mm, threshold={bloom_threshold_percentile}%)")
 
     # Parse Gerber files
     print(f"\nParsing Gerber files...")
@@ -611,12 +655,81 @@ Examples:
     print(f"\nGenerating fill paths...")
     pads = parser_obj.get_pads()
     drill_holes = parser_obj.get_drill_holes()
-    fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset, forced_pad_centerlines=forced_pad_centerlines, force_trace_centerlines=force_trace_centerlines)
-    paths = fill_gen.generate_fill(geometry, trace_centerlines=trace_centerlines, offset_centerlines=offset_centerlines, pads=pads, drill_holes=drill_holes)
+    fill_gen = FillGenerator(line_spacing=line_spacing, initial_offset=initial_offset, forced_pad_centerlines=forced_pad_centerlines, force_trace_centerlines=force_trace_centerlines, force_trace_centerlines_max_thickness=force_trace_centerlines_max_thickness, double_expose_isolated=double_expose_isolated, isolation_threshold=isolation_threshold)
+    result = fill_gen.generate_fill(geometry, trace_centerlines=trace_centerlines, offset_centerlines=offset_centerlines, pads=pads, drill_holes=drill_holes)
+
+    # Handle both list and dict return types
+    if isinstance(result, dict):
+        paths = result['normal']
+        isolated_paths = result['isolated']
+    else:
+        paths = result
+        isolated_paths = []
+
+    # Bloom compensation
+    bloom_compensation_paths = []
+    if bloom_compensation:
+        print(f"\nRunning bloom compensation analysis...")
+
+        # Create simulator
+        simulator = FastBloomSimulator(
+            resolution=bloom_resolution,
+            laser_spot_sigma=bloom_spot_sigma,
+            bloom_scatter_sigma=bloom_scatter_sigma,
+            scatter_fraction=bloom_scatter_fraction
+        )
+
+        # Create grid and simulate
+        simulator.create_grid(geometry.bounds)
+        simulator.simulate(paths, sample_distance=0.05, min_samples=10)
+
+        # Identify under-exposed traces
+        normal_traces, underexposed_traces = identify_underexposed_traces(
+            simulator,
+            trace_centerlines,
+            threshold_percentile=bloom_threshold_percentile,
+            min_trace_length=0.2,
+            verbose=args.verbose
+        )
+
+        # Generate compensation paths
+        if underexposed_traces:
+            print(f"  Identified {len(underexposed_traces)} under-exposed traces")
+            bloom_compensation_paths = generate_compensation_paths(
+                underexposed_traces,
+                fill_gen
+            )
+            print(f"  Generated {len(bloom_compensation_paths)} compensation paths")
+
+            # Generate debug visualization if requested
+            if bloom_debug_image:
+                debug_image_path = output_file.with_suffix('.bloom.png')
+                generate_debug_visualization(
+                    simulator, geometry, normal_traces, underexposed_traces,
+                    bloom_compensation_paths, debug_image_path,
+                    verbose=args.verbose
+                )
 
     total_length = sum(path.length for path in paths)
-    print(f"  Generated {len(paths)} paths")
-    print(f"  Total length: {total_length:.2f} mm")
+    isolated_length = sum(path.length for path in isolated_paths)
+    bloom_length = sum(path.length for path in bloom_compensation_paths)
+
+    print(f"  Generated {len(paths)} normal paths", end='')
+    if isolated_paths:
+        print(f", {len(isolated_paths)} isolated paths", end='')
+    if bloom_compensation_paths:
+        print(f", {len(bloom_compensation_paths)} bloom compensation paths", end='')
+    print()
+
+    if isolated_paths or bloom_compensation_paths:
+        print(f"  Total length: {total_length:.2f}mm normal", end='')
+        if isolated_paths:
+            print(f" + {isolated_length:.2f}mm isolated (2x)", end='')
+        if bloom_compensation_paths:
+            print(f" + {bloom_length:.2f}mm bloom comp (2x)", end='')
+        print()
+    else:
+        print(f"  Total length: {total_length:.2f} mm")
 
     # Generate G-code
     print(f"\nGenerating G-code...")
@@ -640,8 +753,14 @@ Examples:
         pin_transform=pin_transform,
     )
 
+    # Combine isolated paths and bloom compensation paths
+    double_expose_paths = isolated_paths if isolated_paths else []
+    if bloom_compensation_paths:
+        double_expose_paths.extend(bloom_compensation_paths)
+
     with open(output_file, 'w') as f:
-        gcode_gen.generate(paths, f, bounds, board_outline_bounds)
+        gcode_gen.generate(paths, f, bounds, board_outline_bounds,
+                         isolated_paths=double_expose_paths if double_expose_paths else None)
 
     # Format and display time estimate
     time_minutes = gcode_gen.time_estimate_minutes

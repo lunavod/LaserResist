@@ -1,0 +1,133 @@
+Found copper file: Gerber_TopLayer.GTL
+
+================================================================================
+TEST 1: Fine grid (2mm bloom, 0.05mm resolution - 2x finer than line spacing)
+================================================================================
+
+============================================================
+BLOOMING SIMULATION
+============================================================
+Copper file: C:\Users\yegor\Downloads\Gerber_PCB1_1_2025-11-13\Gerber_TopLayer.GTL
+Grid resolution: 0.05mm
+Bloom radius: 2.0mm
+Under-exposure threshold: 30th percentile
+============================================================
+
+[1/5] Parsing Gerber file...
+
+[2/5] Generating fill paths...
+  Adding 1 pad centerlines (iteration 10)
+  Adding 140 trace centerlines avoiding filled zones (from 157 original)
+  Generated 708 paths
+
+[3/5] Creating blooming simulator...
+  Grid created: 1131 x 978 = 1,106,118 cells
+  Grid bounds: (-1.7, -13.2) to (54.8, 35.6) mm
+
+[4/5] Simulating laser exposure with bloom...
+
+  Simulating bloom for 708 paths...
+    Sample distance: 0.1mm, min samples: 10
+    Using 32 parallel workers
+    Split into 33 chunks of ~22 paths each
+    Merging results from 33 workers...
+  Simulation completed in 94.80s
+  Max energy: 553.67
+  Mean energy: 104.44
+
+[5/5] Identifying under-exposed paths...
+
+  Analyzing path exposure levels...
+    Analyzed 100/708 paths...
+    Analyzed 200/708 paths...
+    Analyzed 300/708 paths...
+    Analyzed 400/708 paths...
+    Analyzed 500/708 paths...
+    Analyzed 600/708 paths...
+    Analyzed 700/708 paths...
+
+  Energy statistics:
+    Min: 134.07
+    Max: 530.17
+    Mean: 300.87
+    Median: 288.95
+    30th percentile (threshold): 266.70
+
+  Classification:
+    Normal paths: 495
+    Under-exposed paths: 213
+    Under-exposed percentage: 30.1%
+
+  Creating visualization...
+  Visualization saved to: blooming_2mm_30pct.png
+
+============================================================
+SIMULATION COMPLETE!
+============================================================
+
+
+================================================================================
+TEST 2: Wider bloom (3mm bloom, 0.15mm resolution)
+================================================================================
+
+============================================================
+BLOOMING SIMULATION
+============================================================
+Copper file: C:\Users\yegor\Downloads\Gerber_PCB1_1_2025-11-13\Gerber_TopLayer.GTL
+Grid resolution: 0.15mm
+Bloom radius: 3.0mm
+Under-exposure threshold: 30th percentile
+============================================================
+
+[1/5] Parsing Gerber file...
+
+[2/5] Generating fill paths...
+  Adding 1 pad centerlines (iteration 10)
+  Adding 140 trace centerlines avoiding filled zones (from 157 original)
+  Generated 708 paths
+
+[3/5] Creating blooming simulator...
+  Grid created: 404 x 353 = 142,612 cells
+  Grid bounds: (-3.7, -15.2) to (56.8, 37.6) mm
+
+[4/5] Simulating laser exposure with bloom...
+
+  Simulating bloom for 708 paths...
+    Sample distance: 0.1mm, min samples: 10
+    Using 32 parallel workers
+    Split into 33 chunks of ~22 paths each
+    Merging results from 33 workers...
+  Simulation completed in 23.60s
+  Max energy: 913.50
+  Mean energy: 202.49
+
+[5/5] Identifying under-exposed paths...
+
+  Analyzing path exposure levels...
+    Analyzed 100/708 paths...
+    Analyzed 200/708 paths...
+    Analyzed 300/708 paths...
+    Analyzed 400/708 paths...
+    Analyzed 500/708 paths...
+    Analyzed 600/708 paths...
+    Analyzed 700/708 paths...
+
+  Energy statistics:
+    Min: 260.56
+    Max: 880.21
+    Mean: 536.98
+    Median: 514.71
+    30th percentile (threshold): 446.25
+
+  Classification:
+    Normal paths: 495
+    Under-exposed paths: 213
+    Under-exposed percentage: 30.1%
+
+  Creating visualization...
+  Visualization saved to: blooming_3mm_30pct.png
+
+============================================================
+SIMULATION COMPLETE!
+============================================================
+

@@ -72,7 +72,7 @@ class GCodeGenerator:
         # Calculate S parameter for M3 command (0-255 scale)
         self.laser_s_value = int((laser_power / 100.0) * laser_max_power)
 
-    def generate(self, paths: List[LineString], output_file: TextIO, bounds: tuple = None, board_outline_bounds: tuple = None):
+    def generate(self, paths: List[LineString], output_file: TextIO, bounds: tuple = None, board_outline_bounds: tuple = None, isolated_paths: List[LineString] = None):
         """Generate G-code from fill paths.
 
         Args:
@@ -80,6 +80,7 @@ class GCodeGenerator:
             output_file: File handle to write G-code to
             bounds: Optional bounding box of copper geometry (min_x, min_y, max_x, max_y)
             board_outline_bounds: Optional board outline bounds for coordinate normalization
+            isolated_paths: Optional list of isolated paths to be exposed twice (drawn after main paths)
         """
         if not paths:
             raise ValueError("No paths provided for G-code generation")
@@ -172,8 +173,14 @@ class GCodeGenerator:
                 print(f"  Set x_offset and y_offset to at least {required_offset:.2f}mm to avoid issues.")
                 print(f"  Note: Negative offsets move the effective board position!")
 
-        # Calculate time estimate
-        self.time_estimate_minutes = self._calculate_time_estimate(paths)
+        # Store isolated paths for use in _write_paths
+        self.isolated_paths = isolated_paths
+
+        # Calculate time estimate (including isolated paths if provided)
+        all_paths_for_time = paths.copy()
+        if isolated_paths:
+            all_paths_for_time.extend(isolated_paths)
+        self.time_estimate_minutes = self._calculate_time_estimate(all_paths_for_time)
 
         # TODO: Add custom start G-code support
 
@@ -422,6 +429,78 @@ class GCodeGenerator:
 
             # Store end position for next travel calculation
             prev_end_pos = coords[-1]
+
+        # Write second pass for isolated features if provided
+        if self.isolated_paths and len(self.isolated_paths) > 0:
+            f.write("\n")
+            f.write("; ==================================================\n")
+            f.write("; SECOND PASS - Isolated features (blooming compensation)\n")
+            f.write("; These paths are exposed twice for better coverage\n")
+            f.write("; ==================================================\n")
+            f.write("\n")
+            f.write("G1 F{:.1f}  ; Set exposure speed\n".format(self.feed_rate))
+
+            total_isolated = len(self.isolated_paths)
+            for i, path in enumerate(self.isolated_paths):
+                coords = list(path.coords)
+                if len(coords) < 2:
+                    continue
+
+                # Update progress for isolated paths
+                isolated_progress = ((total_paths + i) / (total_paths + total_isolated)) * 100.0
+                isolated_remaining = max(0, self.time_estimate_minutes - cumulative_time)
+
+                # Emit M73 for progress tracking
+                time_since_last_m73 = cumulative_time - last_m73_time
+                if time_since_last_m73 >= m73_interval or i == 0 or i == total_isolated - 1:
+                    f.write(f"M73 P{isolated_progress:.1f} R{int(isolated_remaining)}  ; Isolated pass progress {isolated_progress:.1f}%\n")
+                    last_m73_time = cumulative_time
+
+                f.write(f"; Isolated path {i+1}/{total_isolated} (length: {path.length:.2f}mm)\n")
+
+                # Transform start position
+                start_x, start_y = coords[0]
+                if self.flip_horizontal:
+                    start_x = 2 * self.flip_center_x - start_x
+                if self.rotate_180:
+                    cx, cy = self.rotation_center_x, self.rotation_center_y
+                    start_x_transformed = 2*cx - start_x + self.transform_x
+                    start_y_transformed = 2*cy - start_y + self.transform_y
+                else:
+                    start_x_transformed = start_x + self.transform_x
+                    start_y_transformed = start_y + self.transform_y
+
+                # Add travel time
+                if prev_end_pos is not None:
+                    dx = start_x - prev_end_pos[0]
+                    dy = start_y - prev_end_pos[1]
+                    travel_distance = (dx**2 + dy**2) ** 0.5
+                    travel_time = travel_distance / self.travel_rate
+                    cumulative_time += travel_time
+
+                f.write(f"G0 X{start_x_transformed:.4f} Y{start_y_transformed:.4f}  ; Move to start\n")
+                f.write(f"M3 S{self.laser_s_value}  ; Laser on\n")
+
+                # Update cumulative time
+                path_time = path.length / self.feed_rate
+                cumulative_time += path_time
+
+                # Trace the path
+                for x, y in coords[1:]:
+                    if self.flip_horizontal:
+                        x = 2 * self.flip_center_x - x
+                    if self.rotate_180:
+                        cx, cy = self.rotation_center_x, self.rotation_center_y
+                        x_transformed = 2*cx - x + self.transform_x
+                        y_transformed = 2*cy - y + self.transform_y
+                    else:
+                        x_transformed = x + self.transform_x
+                        y_transformed = y + self.transform_y
+                    f.write(f"G1 X{x_transformed:.4f} Y{y_transformed:.4f}\n")
+
+                f.write("M5  ; Laser off\n")
+                f.write("\n")
+                prev_end_pos = coords[-1]
 
     def _write_bed_mesh_calibration(self, f: TextIO, board_outline_bounds: tuple, use_macro: bool = False,
                                     probe_to_nozzle: str = None, nozzle_to_probe: str = None):

@@ -10,6 +10,11 @@ initial_offset: 0.05       # Initial inward offset of outer boundaries to compen
 forced_pad_centerlines: false  # Add centerlines to all pads (+ for rectangular, circles for round)
 offset_centerlines: false  # Offset trace centerlines from ends
 force_trace_centerlines: false  # Force all trace centerlines without clipping to avoid filled zones
+force_trace_centerlines_max_thickness: 0.0  # Max thickness for forced centerlines: 0=all traces, >0=only traces <= thickness (mm)
+
+# Isolated feature compensation (for uneven blooming)
+double_expose_isolated: false  # Enable double exposure for isolated features (compensates for less blooming in sparse areas)
+isolation_threshold: 3.0       # Distance in mm - features with no copper within this radius are "isolated"
 
 # Laser settings
 laser_power: 6.0           # Laser power percentage (0-100)
@@ -50,3 +55,12 @@ template_block_height: 4.0           # Height of template block in mm
 template_wall_thickness: 2.0         # Thickness of alignment walls in mm
 hole_print_tolerance: 0.2            # Extra diameter for 3D print compensation in mm
 pcb_safety_offset: 0.0               # Extra margin around board in mm (makes template bigger on all sides)
+
+# Bloom compensation (experimental - trace-based ambient exposure analysis)
+bloom_compensation: false      # Enable bloom compensation for under-exposed traces
+bloom_resolution: 0.05         # Simulation grid resolution in mm (smaller = more accurate but slower)
+bloom_spot_sigma: 0.05         # Tight laser spot Gaussian sigma in mm
+bloom_scatter_sigma: 2.0       # Bloom scatter Gaussian sigma in mm (tune based on your laser/resist)
+bloom_scatter_fraction: 0.35   # Fraction of energy in scatter vs tight spot (0-1, typically 0.2-0.5)
+bloom_threshold_percentile: 30 # Percentile threshold for detection (lower = fewer traces marked as under-exposed)
+bloom_debug_image: false       # Generate bloom visualization PNG alongside G-code file
