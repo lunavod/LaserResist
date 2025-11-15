@@ -4,6 +4,9 @@ import argparse
 import json
 import sys
 import warnings
+import zipfile
+import tempfile
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -157,6 +160,33 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     return config
 
 
+def extract_zip_to_temp(zip_path: Path) -> Path:
+    """Extract ZIP archive to a temporary directory.
+
+    Args:
+        zip_path: Path to ZIP file
+
+    Returns:
+        Path to temporary directory containing extracted files
+    """
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError(f"'{zip_path}' is not a valid ZIP file")
+
+    # Create temporary directory
+    temp_dir = tempfile.mkdtemp(prefix='laserresist_')
+    temp_path = Path(temp_dir)
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_path)
+        print(f"Extracted ZIP archive to temporary directory: {temp_path}")
+        return temp_path
+    except Exception as e:
+        # Clean up on error
+        shutil.rmtree(temp_path, ignore_errors=True)
+        raise RuntimeError(f"Failed to extract ZIP file: {e}")
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -170,6 +200,9 @@ Examples:
   # Auto-detect Gerber files in folder
   laserresist gerber_folder/ -o output.gcode
 
+  # Process ZIP archive (EasyEDA, KiCad, etc.)
+  laserresist gerber_export.zip -o output.gcode
+
   # Use config file for settings
   laserresist input.gtl --config my_settings.json
 
@@ -182,7 +215,7 @@ Examples:
     parser.add_argument(
         "input",
         type=Path,
-        help="Input Gerber file or folder containing Gerber files",
+        help="Input Gerber file, folder containing Gerber files, or ZIP archive",
     )
     parser.add_argument(
         "-o", "--output",
@@ -450,6 +483,17 @@ Examples:
         print(f"Error: Input path '{input_path}' not found")
         return 1
 
+    # Handle ZIP archives
+    temp_dir = None
+    if input_path.is_file() and input_path.suffix.lower() == '.zip':
+        print(f"Detected ZIP archive: {input_path}")
+        try:
+            temp_dir = extract_zip_to_temp(input_path)
+            input_path = temp_dir
+        except (ValueError, RuntimeError) as e:
+            print(f"Error: {e}")
+            return 1
+
     # Determine Gerber files
     if input_path.is_dir():
         side = get_value('side', default='front')
@@ -466,6 +510,8 @@ Examples:
         if not copper_file:
             layer_type = "top" if side in ['front', 'top'] else "bottom"
             print(f"Error: Could not find {side} copper layer file (.gtl/.gbl, .{layer_type}, etc.)")
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
             return 1
 
         print(f"  Copper ({side_display}): {copper_file.name}")
@@ -579,6 +625,8 @@ Examples:
         if not pth_holes and not npth_holes:
             print("Error: No drill holes found for pin alignment.")
             print("Pin alignment requires PTH or NPTH drill files.")
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
             return 1
 
         print(f"Found {len(pth_holes)} PTH holes and {len(npth_holes)} NPTH holes")
@@ -611,6 +659,8 @@ Examples:
 
         if selected is None:
             print("\nPin alignment cancelled. Exiting.")
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
             return 0
 
         # Both modes need 2 pins for rotation detection
@@ -817,6 +867,10 @@ Examples:
             success = template_gen.generate_stl(stl_name)
             if success:
                 print(f"✓ Drilling template STL saved to: {stl_name}")
+
+    # Cleanup temporary directory if it was created
+    if temp_dir:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     return 0
 

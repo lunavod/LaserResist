@@ -39,6 +39,11 @@ Folder auto-detection (finds copper, outline, drill files):
 laserresist gerber_folder/ -o output.gcode
 ```
 
+ZIP archive (EasyEDA, KiCad exports):
+```bash
+laserresist gerber_export.zip -o output.gcode
+```
+
 With config file:
 ```bash
 laserresist input.gtl --config settings.yaml -o output.gcode
@@ -89,7 +94,7 @@ laserresist board.gtl --line-spacing 0.05 --initial-offset 0.03 \
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `input` | Path | Gerber file or folder (required) |
+| `input` | Path | Gerber file, folder, or ZIP archive (required) |
 | `-o, --output` | Path | Output G-code file (default: exposure.gcode) |
 | `--config` | Path | JSON or YAML config file |
 | `-v, --verbose` | Flag | Show verbose output and parser warnings |
